@@ -185,6 +185,7 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("WHITERUN", self.hidden_words("word.docx"))
         self.assertEqual([c["decoded"] for c in r["invisible_chars"]], [make_samples.TAG_MESSAGE])
         self.assertEqual(r["metadata"].get("dc:creator"), "A. Sample")
+        self.assertNotIn("Producer", r["metadata"])        # that would be our own conversion's
 
     def test_word_form_markers_ignored(self):
         self.assertFalse(any("of Form" in f["text"] for f in self.r["word.docx"]["word"]))

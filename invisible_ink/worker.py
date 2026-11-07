@@ -378,8 +378,9 @@ def render_pdf(pdf, outdir, manifest, mode, texts):
         raise RuntimeError("The PDF has no pages.")
     manifest["truncated_pages"] = max(0, pages - MAX_PAGES)
     pages = min(pages, MAX_PAGES)
-    manifest["pdf_info"] = {k: info[k] for k in ("Title", "Author", "Creator", "Producer", "Subject", "Keywords")
-                            if k in info}
+    if manifest["kind"] == "pdf":      # a Word file's PDF is our own conversion; its properties are not the file's
+        manifest["pdf_info"] = {k: info[k] for k in ("Title", "Author", "Creator", "Producer", "Subject", "Keywords")
+                                if k in info}
     if info.get("Encrypted", "no").startswith("yes"):
         manifest["notes"].append("The PDF is encrypted, usually only to restrict copying or printing.")
     if info.get("JavaScript", "no") == "yes":

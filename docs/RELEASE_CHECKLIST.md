@@ -33,7 +33,8 @@ Expected: no hits apart from the `example` address style in tests, if any.
       as active, an AI's name in file properties (ChatGPT Canvas export), white labels on light
       title bars judged faint (LaTeX). One true finding: placeholder text hidden behind photos in
       a slide deck.
-- [ ] Google Docs export: not in the sample yet; try one.
+- [x] Google Docs export (2026-11-07): a `.docx` from Google Docs with a sentence hidden on purpose.
+      Found, and `clean` dropped it while keeping the visible text.
 
 ## 3. The page people land on
 
