@@ -80,7 +80,9 @@ def tricks(path):
 
 
 def ordinary(path):
-    d = Doc(info={"Title": "Field notes", "Author": "A. Sample"})
+    # Properties as a ChatGPT Canvas export carries them: naming an AI is not addressing one.
+    d = Doc(info={"Title": "Field notes", "Author": "ChatGPT Canvas", "Creator": "ChatGPT",
+                  "Producer": "WeasyPrint 68.0"})
     p = d.page()
     p.rect(0, 720, 612, 72, rgb=(0.1, 0.15, 0.4))
     p.text(72, 750, 20, "Banner heading in white", rgb=(1, 1, 1))

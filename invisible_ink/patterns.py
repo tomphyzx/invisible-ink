@@ -12,7 +12,14 @@ GENERAL = [
     r"\b(instructions?|prompts?|rules|directions|guidelines|context)\b",
     r"\b(you are|you're|act as|pretend to be|from now on,? you)\b.{0,20}\b(an? )?(ai|assistant|language model|llm|"
     r"chatbot|model)\b",
-    r"\b(chatgpt|gpt-?\d\w*|claude|gemini|copilot|llama|grok|perplexity)\b",
+    # An AI product's name counts only when the text speaks to it, not when it merely mentions
+    # it ("written with ChatGPT Canvas", "ChatGPT, Claude and Gemini"): a greeting before it, a
+    # colon after it, or a command right behind it ("ChatGPT, please rate ...").
+    r"\b(dear|hey|hi|hello|attention|note to|message to|instructions? (to|for))\s+(chatgpt|gpt-?\d\w*|claude|"
+    r"gemini|copilot|llama|grok|perplexity)\b",
+    r"\b(chatgpt|gpt-?\d\w*|claude|gemini|copilot|llama|grok|perplexity)\s*:\s*\w",
+    r"\b(chatgpt|gpt-?\d\w*|claude|gemini|copilot|llama|grok|perplexity)\s*,?\s+(please\s+)?(ignore|disregard|"
+    r"give|rate|say|respond|reply|write|describe|recommend|award|tell|summari[sz]e|do not|don't|never)\b",
     r"\b(ai|llm|language model|assistant|chatbot|model) (reading|reviewing|processing|evaluating|screening|grading|"
     r"summari[sz]ing|parsing)\b",
     r"\b(note|instructions?|message|attention) (to|for) (the |any )?(ai|llm|assistant|model|chatbot|language model|"

@@ -28,6 +28,7 @@ REASONS = {
     "tiny": "too small to read (under 3 pt)",
     "off_page": "outside the page",
 }
+SOFTWARE_FIELDS = {"Creator", "Producer", "Make", "Model"}
 WORD_KINDS = {"hidden": "Text marked hidden in Word", "deleted": "Deleted text kept by tracked changes",
               "comment": "Comment", "alt_text": "Image alt text"}
 
@@ -233,7 +234,9 @@ def analyze(ext, name, packs=None, use_ocr=True):
     report["invisible_chars"] = chars.find(ext.text)
     for f in report["invisible_chars"]:
         f["ai"] = patterns.hits(f["decoded"] or "")
-    report["metadata_ai"] = patterns.hits(" ".join(ext.metadata.values()))
+    # Creator and Producer name the software that made the file ("ChatGPT", "Microsoft Word"),
+    # and Make and Model the camera: not places anyone writes an instruction.
+    report["metadata_ai"] = patterns.hits(" ".join(v for k, v in ext.metadata.items() if k not in SOFTWARE_FIELDS))
     for page_no, text in page_text_visible.items():
         if patterns.hits(text, packs or []):
             report["visible_ai_pages"].append(page_no)
