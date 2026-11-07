@@ -33,9 +33,9 @@ Expected: no hits apart from the `example` address style in tests, if any.
 
 ## 3. The page people land on
 
-- [ ] README example output matches what the current version prints.
-- [ ] Repository description: "Find and remove text a reader can't see but an AI will read."
-- [ ] Topics: `prompt-injection`, `hidden-text`, `pdf`, `docx`, `llm-security`, `ai-safety`.
+- [x] README example output matches what the current version prints (checked 2026-11-07).
+- [x] Repository description: "Find and remove text a reader can't see but an AI will read."
+- [ ] Topics: set in the release step below.
 - [x] `SECURITY.md` says how to report a bypass privately (GitHub private vulnerability reporting).
 
 ## 4. Release
@@ -45,6 +45,7 @@ git tag -a v0.1.0 -m "Invisible Ink 0.1.0"
 git push origin main --tags
 gh repo edit tomphyzx/invisible-ink --visibility public --accept-visibility-change-consequences
 gh api -X PUT repos/tomphyzx/invisible-ink/private-vulnerability-reporting   # SECURITY.md relies on it
+gh repo edit tomphyzx/invisible-ink --add-topic prompt-injection,hidden-text,pdf,docx,llm-security,ai-safety
 gh release create v0.1.0 --title "Invisible Ink 0.1.0" --notes-file docs/release-notes-0.1.0.md
 ```
 
