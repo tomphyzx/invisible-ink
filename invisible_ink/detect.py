@@ -224,6 +224,11 @@ def analyze(ext, name, packs=None, use_ocr=True):
     report["hidden"] = [p for p in report["hidden"] if _wordy(p["text"]) or p["ai"]]
     report["hidden_ai"] = patterns.hits(all_hidden)
     for f in ext.word_findings:
+        # Word marks pasted web forms with hidden "Top of Form" / "Bottom of Form" text itself.
+        if f["kind"] == "hidden":
+            f = dict(f, text=re.sub(r"(Top|Bottom) of Form", " ", f["text"]).strip())
+            if not f["text"]:
+                continue
         report["word"].append(dict(f, ai=patterns.hits(f["text"])))
     report["invisible_chars"] = chars.find(ext.text)
     for f in report["invisible_chars"]:

@@ -72,8 +72,9 @@ def tool(name):
 
 def sniff(path):
     with open(path, "rb") as f:
-        head = f.read(16)
-    if head.startswith(b"%PDF"):
+        first = f.read(1024)
+    head = first[:16]
+    if b"%PDF-" in first:              # the standard allows bytes before the header
         return "pdf"
     if head.startswith(b"PK\x03\x04"):
         return "zip"
@@ -144,12 +145,15 @@ def word_structure(path, manifest, texts):
                     if t:
                         findings.append({"kind": "comment", "where": where, "text": t})
                 continue
-            for r in root.iter(W + "r"):
-                rpr = r.find(W + "rPr")
-                if rpr is not None and (rpr.find(W + "vanish") is not None or rpr.find(W + "specVanish") is not None):
-                    t = _text_of(r)
-                    if t.strip():
-                        findings.append({"kind": "hidden", "where": where, "text": t})
+            for para in root.iter(W + "p"):
+                hidden = []
+                for r in para.findall(W + "r") + [r for h in para.findall(W + "hyperlink") for r in h.findall(W + "r")]:
+                    rpr = r.find(W + "rPr")
+                    if rpr is not None and (rpr.find(W + "vanish") is not None or rpr.find(W + "specVanish") is not None):
+                        hidden.append(_text_of(r))
+                t = "".join(hidden)
+                if t.strip():
+                    findings.append({"kind": "hidden", "where": where, "text": t})
             for d in root.iter(W + "del"):
                 t = _text_of(d)
                 if t.strip():
@@ -160,12 +164,9 @@ def word_structure(path, manifest, texts):
                         t = (el.get(attr) or "").strip()
                         if t:
                             findings.append({"kind": "alt_text", "where": where, "text": t})
-    # Join neighbouring hidden runs from one passage into one finding.
     merged = []
     for f in findings:
-        if merged and merged[-1]["kind"] == f["kind"] == "hidden" and merged[-1]["where"] == f["where"]:
-            merged[-1]["text"] += f["text"]
-        elif not (merged and f["kind"] == "alt_text" and merged[-1] == f):
+        if not (merged and f["kind"] == "alt_text" and merged[-1] == f):
             merged.append(f)
     for f in merged:
         f["text"] = f["text"][:2000]
@@ -304,18 +305,22 @@ def ink_measure(pdf, page, boxes, outdir, keep_grey, entry=None):
     widened upwards]. A word that changes no pixels is in the text layer but cannot be seen."""
     from PIL import Image, ImageChops, ImageStat
     gs = tool("gs")
-    a, b = os.path.join(outdir, "ink-a.pgm"), os.path.join(outdir, "ink-b.pgm")
-    base = ["-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=pgmraw", "-r%d" % INK_DPI, "-dUseCropBox",
+    a, b = os.path.join(outdir, "ink-a.ppm"), os.path.join(outdir, "ink-b.ppm")
+    base = ["-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=ppmraw", "-r%d" % INK_DPI, "-dUseCropBox",
             "-dFirstPage=%d" % page, "-dLastPage=%d" % page]
     r1 = run([gs] + base + ["-sOutputFile=" + a, pdf])
     r2 = run([gs] + base + ["-dFILTERTEXT", "-sOutputFile=" + b, pdf])
     if r1.returncode or r2.returncode or not (os.path.exists(a) and os.path.exists(b)):
         return None
     with Image.open(a) as ia, Image.open(b) as ib:
-        ga, gb = ia.convert("L"), ib.convert("L")
-    if ga.size != gb.size:
+        ca, cb = ia.convert("RGB"), ib.convert("RGB")
+    if ca.size != cb.size:
         return None
-    diff = ImageChops.difference(ga, gb)
+    ga = ca.convert("L")
+    # The largest change in any colour channel: light blue on white is plainly visible even
+    # though its brightness is close to white's.
+    red, green, blue = ImageChops.difference(ca, cb).split()
+    diff = ImageChops.lighter(ImageChops.lighter(red, green), blue)
     s = INK_DPI / 72.0
     heights = sorted(y1 - y0 for (x0, y0, x1, y1) in boxes) or [0]
     median_h = heights[len(heights) // 2]
@@ -354,7 +359,7 @@ def ink_measure(pdf, page, boxes, outdir, keep_grey, entry=None):
                     out[k][4] = int(ImageStat.Stat(gp.crop(box)).stddev[0] * 10)
             os.remove(pbase + ".pgm")
     if keep_grey:
-        os.replace(a, os.path.join(outdir, "g%03d.pgm" % page))
+        ga.save(os.path.join(outdir, "g%03d.pgm" % page))
         if entry is not None and any(row[0] == 0 and row[1] > 0 for row in out):
             # Words that draw nothing get a closer look by OCR, which needs more detail.
             hbase = os.path.join(outdir, "h%03d" % page)
@@ -376,11 +381,12 @@ def render_pdf(pdf, outdir, manifest, mode, texts):
     manifest["pdf_info"] = {k: info[k] for k in ("Title", "Author", "Creator", "Producer", "Subject", "Keywords")
                             if k in info}
     if info.get("Encrypted", "no").startswith("yes"):
-        manifest["markers"].append("encrypted PDF")
+        manifest["notes"].append("The PDF is encrypted, usually only to restrict copying or printing.")
     if info.get("JavaScript", "no") == "yes":
         manifest["markers"].append("JavaScript")
     if info.get("Form", "none") not in ("none", ""):
-        manifest["markers"].append("form fields")
+        manifest["notes"].append("The PDF has form fields. Text typed into them is not checked yet; "
+                                 "`clean` keeps only what shows on the page.")
     with open(pdf, "rb") as f:
         raw = f.read(200_000_000)
     found = {m.decode().lstrip("/") for m in PDF_MARKERS if re.search(re.escape(m) + rb"[\s/<\[(]", raw)}

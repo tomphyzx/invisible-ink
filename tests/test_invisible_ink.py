@@ -157,6 +157,15 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual([c["decoded"] for c in r["invisible_chars"]], [make_samples.TAG_MESSAGE])
         self.assertEqual(r["metadata"].get("dc:creator"), "A. Sample")
 
+    def test_word_form_markers_ignored(self):
+        self.assertFalse(any("of Form" in f["text"] for f in self.r["word.docx"]["word"]))
+
+    def test_pdf_header_after_leading_bytes(self):
+        path = os.path.join(self.tmp.name, "late-header.pdf")
+        with open(self.path("tricks.pdf"), "rb") as a, open(path, "wb") as b:
+            b.write(b"  \r\n" + a.read())
+        self.assertIn("WHITEWORD", {w for p in scan(path)["hidden"] for w in p["text"].split()})
+
     def test_photo_metadata(self):
         meta = self.r["photo.jpg"]["metadata"]
         self.assertEqual(meta.get("Artist"), "A. Sample")

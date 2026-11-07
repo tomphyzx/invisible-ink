@@ -162,6 +162,11 @@ Nothing leaves your computer. Invisible Ink makes no network connections.
 - Only the first 100 pages are checked.
 - OCR is English by default.
 
+## Reporting a bypass
+
+Found a way to hide text that Invisible Ink misses? Please report it privately: see
+[SECURITY.md](SECURITY.md).
+
 ## Tests
 
 ```bash

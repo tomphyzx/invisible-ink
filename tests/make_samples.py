@@ -86,6 +86,7 @@ def ordinary(path):
     p.text(72, 750, 20, "Banner heading in white", rgb=(1, 1, 1))
     p.text(72, 690, 12, "Plain body text in black, the ordinary case.")
     p.text(72, 670, 12, "Mid grey text that anyone can read.", rgb=(0.5, 0.5, 0.5))
+    p.text(72, 700, 12, "Light blue subtitle, low in brightness contrast but plainly visible.", rgb=(0.2, 0.75, 0.9))
     p.rect(66, 640, 300, 22, rgb=(1, 0.95, 0.6))
     p.text(72, 646, 12, "Black text on a pale yellow highlight.")
     p.image(72, 380, 360, 240, _photo(720, 480, seed=9))
@@ -169,6 +170,9 @@ def word(path):
     W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
     body = """<w:p><w:r><w:t xml:space="preserve">An ordinary paragraph that prints normally.</w:t></w:r></w:p>
 <w:p><w:r><w:rPr><w:vanish/></w:rPr><w:t xml:space="preserve">HIDDENRUN marked hidden in Word.</w:t></w:r></w:p>
+<w:p><w:r><w:rPr><w:vanish/></w:rPr><w:t>Top of Form</w:t></w:r></w:p>
+<w:p><w:r><w:t xml:space="preserve">A pasted web form sat here.</w:t></w:r></w:p>
+<w:p><w:r><w:rPr><w:vanish/></w:rPr><w:t>Bottom of Form</w:t></w:r></w:p>
 <w:p><w:r><w:rPr><w:color w:val="FFFFFF"/></w:rPr><w:t xml:space="preserve">WHITERUN in white font.</w:t></w:r></w:p>
 <w:p><w:del w:id="1" w:author="x" w:date="2026-01-01T00:00:00Z"><w:r><w:delText xml:space="preserve">DELETEDRUN kept by tracked changes.</w:delText></w:r></w:del></w:p>
 <w:p><w:commentRangeStart w:id="0"/><w:r><w:t xml:space="preserve">A sentence with a comment</w:t></w:r><w:commentRangeEnd w:id="0"/><w:r><w:commentReference w:id="0"/></w:r></w:p>
