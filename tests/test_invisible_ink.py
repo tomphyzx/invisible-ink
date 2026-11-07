@@ -4,7 +4,6 @@ import contextlib
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,10 +15,11 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 
 import make_samples  # noqa: E402
 from invisible_ink import chars, detect, patterns, sandbox  # noqa: E402
+from invisible_ink.worker import tool  # noqa: E402
 from invisible_ink.__main__ import main  # noqa: E402
 
 NEEDED = ["pdftotext", "pdftoppm", "pdfunite", "tesseract", "gs", "soffice"]
-MISSING = [t for t in NEEDED if not shutil.which(t)]
+MISSING = [t for t in NEEDED if not tool(t)]
 
 
 def scan(path, **env):

@@ -7,10 +7,11 @@
 
 import argparse
 import os
-import shutil
+import platform
 import sys
 
 from . import __version__, chars, clean, detect, patterns, report, sandbox
+from .worker import tool
 
 TEXT_EXT = {".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".yaml", ".yml", ".rst", ".log"}
 MAX_TEXT = 20_000_000
@@ -95,18 +96,16 @@ def cmd_clean(args, packs):
 
 
 def cmd_check(_args, _packs):
-    rows = [("pdftotext / pdftoppm (poppler)", shutil.which("pdftoppm"), "required"),
-            ("tesseract", shutil.which("tesseract"), "required for clean; used by scan on scanned pages"),
-            ("gs (Ghostscript)", shutil.which("gs"), "strongly recommended: finds covered and faint text"),
-            ("soffice (LibreOffice)", shutil.which("soffice") or (
-                "/Applications/LibreOffice.app/Contents/MacOS/soffice"
-                if os.path.exists("/Applications/LibreOffice.app/Contents/MacOS/soffice") else None),
-             "needed for Word files"),
-            ("mutool (MuPDF)", shutil.which("mutool"), "optional: counts switched-off PDF layers reliably"),
+    rows = [("pdftotext / pdftoppm (poppler)", tool("pdftoppm") and tool("pdftotext"), "required"),
+            ("tesseract", tool("tesseract"), "required for clean; used by scan on scanned pages"),
+            ("gs (Ghostscript)", tool("gs"), "strongly recommended: finds covered and faint text"),
+            ("soffice (LibreOffice)", tool("soffice"), "needed for Word files"),
+            ("mutool (MuPDF)", tool("mutool"), "optional: counts switched-off PDF layers reliably"),
             ("bwrap (bubblewrap sandbox)", "yes" if sandbox.bwrap_available() else None, "Linux: recommended")]
+    print("invisible-ink %s, Python %s, %s" % (__version__, platform.python_version(), platform.platform()))
     for name, found, why in rows:
         print("  %-32s %-8s %s" % (name, "found" if found else "MISSING", why))
-    return 0 if shutil.which("pdftoppm") and shutil.which("pdftotext") else 2
+    return 0 if tool("pdftoppm") and tool("pdftotext") else 2
 
 
 def main(argv=None):

@@ -11,7 +11,7 @@ readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "tomPhyzx" }]
 requires-python = ">=3.10"
-dependencies = ["Pillow>=9.2"]
+dependencies = ["Pillow>=10.1"]
 keywords = ["prompt injection", "hidden text", "pdf", "docx", "llm", "security", "white text"]
 classifiers = [
     "License :: OSI Approved :: MIT License",
