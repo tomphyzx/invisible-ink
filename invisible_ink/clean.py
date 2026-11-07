@@ -18,16 +18,29 @@ from PIL import ImageDraw
 from . import __version__, chars, ocr, pdfgen
 
 PAINT_OVER = {"faint", "tiny"}
-def output_path(src, out=None, suffix=".pdf"):
-    if out and os.path.isdir(out):
-        base = os.path.join(out, os.path.splitext(os.path.basename(src))[0] + ".clean")
+def is_folder(out):
+    """-o names a folder when it is one, ends in a slash, or has no extension."""
+    return os.path.isdir(out) or out.endswith(("/", os.sep)) or not os.path.splitext(out.rstrip("/"))[1]
+
+
+def output_path(src, out=None, suffix=".pdf", allowed=None):
+    """Where a cleaned copy goes. out is a folder (created if needed) or a file name, which gets
+    the right extension if it lacks one. An existing file is never overwritten: -2, -3 ... are
+    added instead."""
+    allowed = {e.lower() for e in (allowed or [suffix])}
+    stem = os.path.splitext(os.path.basename(src))[0] + ".clean"
+    if out and is_folder(out):
+        os.makedirs(out, exist_ok=True)
+        base, ext = os.path.join(out, stem), suffix
     elif out:
-        return out
+        base, ext = os.path.splitext(out)
+        if ext.lower() not in allowed:
+            base, ext = out, suffix
     else:
-        base = os.path.splitext(src)[0] + ".clean"
-    target, n = base + suffix, 2
+        base, ext = os.path.join(os.path.dirname(src), stem), suffix
+    target, n = base + ext, 2
     while os.path.exists(target):
-        target = "%s-%d%s" % (base, n, suffix)
+        target = "%s-%d%s" % (base, n, ext)
         n += 1
     return target
 

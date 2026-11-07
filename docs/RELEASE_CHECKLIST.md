@@ -22,7 +22,9 @@ Expected: no hits apart from the `example` address style in tests, if any.
 ## 2. It works on a clean machine
 
 - [x] CI (`.github/workflows/tests.yml`) is green on GitHub.
-- [ ] On a Mac: `bash tools/platform-check.sh` passes (Diane; email with instructions drafted 2026-11-07).
+- [x] On a Mac: `bash tools/platform-check.sh` passes. Diane, 2026-11-07: MacBook Air (Apple silicon),
+      macOS 26.6.2, Python 3.15.2; 23/23 tests, samples and cleaned copies as expected; no false
+      alarms on three of her own files. Her `-o` report (a new folder taken as a file name) is fixed.
 - [x] Scanned real documents of each kind with no false alarms. 2026-11-07: about 80 files
       (PDFs from Word and other tools, scanned PDFs, patents, papers, slide decks, `.docx`,
       photos, screenshots). Fixed on the way: maths-font boxes, fonts the sandbox hid from

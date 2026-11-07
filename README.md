@@ -78,6 +78,9 @@ keep their full resolution (up to 600 dpi).
 - Text files become `NAME.clean.txt` with invisible characters removed. Emoji that legitimately use
   joiners, variation selectors or tag characters (such as flags) are kept.
 - `--report-page` adds a first page saying what was removed.
+- With `-o`, a name without an extension (or ending in `/`) is a folder; it is created if needed.
+  A file name gets the right extension added if it lacks one.
+- An existing file is never overwritten: `NAME.clean-2.pdf`, `-3` and so on are used instead.
 
 Visible text that reads like an instruction to an AI is reported but kept: it is part of what the
 author shows every reader.
@@ -127,7 +130,8 @@ invisible-ink scan --json FILE...         # the same as JSON, for scripts
 invisible-ink scan --verbose FILE         # also file properties and every finding
 invisible-ink scan --pack hiring FILE     # also flag hiring wording in visible text
 invisible-ink clean FILE...               # write NAME.clean.pdf next to each file
-invisible-ink clean -o OUTDIR FILE...     # write the cleaned files to a folder
+invisible-ink clean -o OUTDIR FILE...     # write the cleaned files to a folder (created if needed)
+invisible-ink clean -o NEW.pdf FILE       # one file: choose the cleaned file's name
 invisible-ink clean --report-page FILE    # add a first page listing what was removed
 invisible-ink check                       # show which helper programs were found
 ```

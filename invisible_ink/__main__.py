@@ -64,22 +64,24 @@ def cmd_scan(args, packs):
 
 def cmd_clean(args, packs):
     status = 0
-    if args.output and len(args.files) > 1 and not os.path.isdir(args.output):
-        print("With several files, -o must be a folder.", file=sys.stderr)
+    if args.output and len(args.files) > 1 and not clean.is_folder(args.output):
+        print("With several files, -o must be a folder (a name without an extension, or ending in /).",
+              file=sys.stderr)
         return 2
     for path in args.files:
         try:
             if _is_text(path):
                 r = detect.analyze_text(_read_text(path), os.path.basename(path), packs)
-                target = clean.output_path(path, args.output, os.path.splitext(path)[1])
+                target = clean.output_path(path, args.output, os.path.splitext(path)[1], TEXT_EXT)
                 clean.clean_text(path, target)
             else:
                 r, boxes, ext = _scan_one(path, "clean", args, packs)
                 try:
-                    suffix = ".pdf"
+                    suffix, allowed = ".pdf", [".pdf"]
                     if ext.kind == "image":
                         suffix = ".jpg" if os.path.splitext(path)[1].lower() in (".jpg", ".jpeg") else ".png"
-                    target = clean.output_path(path, args.output, suffix)
+                        allowed = [".jpg", ".jpeg", ".png"]
+                    target = clean.output_path(path, args.output, suffix, allowed)
                     clean.rebuild(ext, r, boxes, target, use_ocr=not args.no_ocr, report_page=args.report_page)
                 finally:
                     ext.cleanup()
@@ -123,7 +125,8 @@ def main(argv=None):
     s.add_argument("--json", action="store_true", help="print the report as JSON")
     s.add_argument("-v", "--verbose", action="store_true", help="show file properties and every finding")
     c = sub.add_parser("clean", parents=[common], help="write a rebuilt copy with nothing hidden")
-    c.add_argument("-o", "--output", help="output file, or folder for several files")
+    c.add_argument("-o", "--output", help="output folder (created if needed; any name without an extension, or "
+                   "ending in /) or, for one file, an output file name. Existing files are never overwritten.")
     c.add_argument("--report-page", action="store_true", help="add a first page saying what was removed")
     sub.add_parser("check", help="show which helper programs were found")
     args = ap.parse_args(argv)
