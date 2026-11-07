@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# "invisible-ink" on PyPI belongs to an unrelated project, so the package carries the maker's name.
+name = "tomphyzx-invisible-ink"
+version = "0.1.0"
+description = "Find and remove text a reader can't see but an AI will read."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "tomPhyzx" }]
+requires-python = ">=3.10"
+dependencies = ["Pillow>=9.2"]
+keywords = ["prompt injection", "hidden text", "pdf", "docx", "llm", "security", "white text"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Topic :: Security",
+    "Topic :: Text Processing",
+]
+
+[project.urls]
+Homepage = "https://github.com/tomphyzx/invisible-ink"
+
+[project.scripts]
+invisible-ink = "invisible_ink.__main__:main"
+
+[tool.setuptools]
+packages = ["invisible_ink"]

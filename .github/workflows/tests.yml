@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install helper programs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils ghostscript tesseract-ocr \
+            libreoffice-writer mupdf-tools bubblewrap fonts-dejavu-core python3-pil
+      - name: Allow bubblewrap on the runner
+        # Ubuntu 24.04 restricts unprivileged user namespaces; the sandbox needs them.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Check
+        run: python3 bin/invisible-ink check
+      - name: Test
+        run: python3 -m unittest discover -s tests -v
