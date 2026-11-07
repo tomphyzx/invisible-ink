@@ -30,7 +30,9 @@ Expected: no hits apart from the `example` address style in tests, if any.
       photos, screenshots). Fixed on the way: maths-font boxes, fonts the sandbox hid from
       Ghostscript, old OCR layers in figures, coloured text judged by brightness only, a PDF
       header after leading bytes, Word's "Top of Form" markers, encrypted and form PDFs reported
-      as active. One true finding: placeholder text hidden behind photos in a slide deck.
+      as active, an AI's name in file properties (ChatGPT Canvas export), white labels on light
+      title bars judged faint (LaTeX). One true finding: placeholder text hidden behind photos in
+      a slide deck.
 - [ ] Google Docs export: not in the sample yet; try one.
 
 ## 3. The page people land on

@@ -91,6 +91,10 @@ def ordinary(path):
     p.text(72, 700, 12, "Light blue subtitle, low in brightness contrast but plainly visible.", rgb=(0.2, 0.75, 0.9))
     p.rect(66, 640, 300, 22, rgb=(1, 0.95, 0.6))
     p.text(72, 646, 12, "Black text on a pale yellow highlight.")
+    p.rect(66, 622, 300, 16, rgb=(0.8, 0.8, 0.8))          # white label on a light grey title bar
+    p.text(72, 626, 11, "Prompt", rgb=(1, 1, 1))
+    p.rect(366, 622, 180, 16, rgb=(0.8, 0.8, 1.0))        # and on a light blue one
+    p.text(372, 626, 11, "Response", rgb=(1, 1, 1))
     p.image(72, 380, 360, 240, _photo(720, 480, seed=9))
     p.text(72, 365, 9, "Figure 1. A photo with a caption under it.")
     p.text(72, 60, 7, "Footnote in seven point type, small but readable.")

@@ -17,7 +17,10 @@ from PIL import ImageStat
 from . import chars, ocr, patterns
 
 TINY_PT = 3.0
-FAINT_MAX = 60           # largest change a word makes, out of 255, below which it is "faint"
+# Largest change a word makes in any colour channel, out of 255, below which it is "faint".
+# Hiding tricks sit within about 35 of the background (very light grey on white); white labels
+# on light grey or light blue title bars change about 50 and are plainly readable.
+FAINT_MAX = 40
 NO_INK_FRACTION = 0.002  # a word changing fewer pixels than this share of its box draws nothing
 BLANK_SD10 = 60          # contrast of the area x10: below it, the area is a flat colour
 

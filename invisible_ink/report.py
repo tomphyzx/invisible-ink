@@ -42,9 +42,10 @@ def text_report(r, verbose=False):
     if r.get("fragments"):
         n = sum(p["word_count"] for p in r["fragments"])
         pages = sorted({p["page"] for p in r["fragments"]})
-        out += ["", "Also %d stray number%s or letter%s out of sight on page %s (typical of old OCR layers in "
-                "figures; not counted)%s" % (n, "" if n == 1 else "s", "" if n == 1 else "s",
-                                             ", ".join(map(str, pages)), ":" if verbose else ". --verbose lists them.")]
+        out += ["", "Also %d stray word%s, number%s or letter%s out of sight on page %s. On their own they cannot "
+                "carry an instruction, so they are not counted (old OCR layers in figures leave many)%s"
+                % (n, "" if n == 1 else "s", "" if n == 1 else "s", "" if n == 1 else "s",
+                   ", ".join(map(str, pages)), ":" if verbose else ". --verbose lists them.")]
         if verbose:
             for p in r["fragments"]:
                 out.append("  Page %d: %s" % (p["page"], _quote(p["text"], 200)))
