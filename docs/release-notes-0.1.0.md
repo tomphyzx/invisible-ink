@@ -11,3 +11,11 @@ First public release.
 - `clean` rebuilds a copy from page pixels, so nothing hidden survives.
 - Scanned PDFs with OCR layers come out clean.
 - Files are opened in a bubblewrap sandbox on Linux.
+- `clean -o` takes a folder (created if needed) or, for one file, a file name; nothing is
+  ever overwritten.
+
+Tested on Ubuntu 24.04 (with the sandbox) and macOS 26 on Apple silicon (without it), and
+against about 80 real documents: PDFs from Word, LaTeX and other tools, scanned PDFs, patents,
+papers, slide decks, Word and Google Docs files, photos and screenshots.
+
+Found a way to hide text that Invisible Ink misses? Please report it privately: see SECURITY.md.
