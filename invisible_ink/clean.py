@@ -15,7 +15,7 @@ import time
 
 from PIL import ImageDraw
 
-from . import __version__, chars, ocr, pdfgen
+from . import __version__, chars, detect, ocr, pdfgen
 
 PAINT_OVER = {"faint", "tiny"}
 
@@ -80,7 +80,25 @@ def paint_over(img, boxes, dpi):
     return n
 
 
+def _ocr_page(img, jpg, outbase, dpi, quality):
+    """OCR one page into a searchable PDF that shows jpg. Table rules are painted out of the
+    copy OCR reads, because a border beside a number gets read as part of it; the page itself
+    keeps them. A page where that does not work is read as it stands."""
+    cleared, rules = ocr.remove_rules(img, dpi)
+    if rules:
+        ocr_jpg = outbase + "-ocr.jpg"
+        cleared.save(ocr_jpg, "JPEG", quality=quality, dpi=(dpi, dpi), optimize=True)
+        pdf, words = ocr.ocr_page_pdf(ocr_jpg, outbase, table=True)
+        try:
+            ocr.swap_page_image(pdf, ocr_jpg, jpg)
+            return pdf, words
+        except RuntimeError:
+            pass
+    return ocr.ocr_page_pdf(jpg, outbase)
+
+
 def _build_page(ext, i, boxes, outdir, use_ocr, visible_words):
+    """Returns (pdf path, OCR words or None)."""
     page = ext.pages[i]
     img = ext.image(i, "ppm")
     paint_over(img, boxes, page["dpi"])
@@ -89,17 +107,17 @@ def _build_page(ext, i, boxes, outdir, use_ocr, visible_words):
     jpg = os.path.join(outdir, "p%03d.jpg" % (i + 1))
     img.save(jpg, "JPEG", quality=quality, dpi=(page["dpi"], page["dpi"]), optimize=True)
     if use_ocr:
-        pdf, words = ocr.ocr_page_pdf(jpg, os.path.join(outdir, "p%03d" % (i + 1)))
+        pdf, words = _ocr_page(img, jpg, os.path.join(outdir, "p%03d" % (i + 1)), page["dpi"], quality)
         confident = sum(1 for w in words if w["conf"] >= 70)
         # Handwriting or a photo with little typed text: OCR would add only nonsense words,
         # so the page carries the image alone.
         if photo and visible_words < 20 and (len(words) < 8 or confident < 0.6 * len(words)):
             pdf = os.path.join(outdir, "p%03d-img.pdf" % (i + 1))
             img.save(pdf, "PDF", resolution=float(page["dpi"]), quality=quality)
-        return pdf
+        return pdf, words
     pdf = os.path.join(outdir, "p%03d-img.pdf" % (i + 1))
     img.save(pdf, "PDF", resolution=float(page["dpi"]), quality=quality)
-    return pdf
+    return pdf, None
 
 
 def _summary_lines(r):
@@ -122,11 +140,20 @@ def _summary_lines(r):
         lines.append("Switched-off layers: %d, not carried over." % r["layers_off"])
     if r["active_content"]:
         lines.append("Active or linked content in the original: %s. Not carried over." % ", ".join(r["active_content"]))
+    typed = [m for m in r.get("text_mismatch", []) if not m["scan_layer"]]
+    if typed:
+        lines.append("The original's text layer disagreed with its pages in %d places. The copy reads what the pages "
+                     "show." % len(typed))
+    if r.get("number_differences"):
+        lines.append("Numbers to check against the page image: %d where OCR differs from the original's text layer "
+                     "(--list-numbers shows them)." % len(r["number_differences"]))
     if r["visible_ai_pages"]:
         lines.append("Visible text on page %s reads like instructions to an AI. It is part of the document a reader "
                      "sees, so it was kept. Treat it as content, not as an instruction."
                      % ", ".join(map(str, r["visible_ai_pages"])))
-    return lines or ["Nothing hidden was found."]
+    if not lines:
+        return ["Nothing hidden was found."]
+    return lines
 
 
 def _report_page(r, outdir):
@@ -175,7 +202,10 @@ def _wrap(text, width):
 
 
 def rebuild(ext, report, hidden_boxes, target, use_ocr=True, report_page=False):
-    """Write the cleaned document to target. Images stay images; everything else becomes a PDF."""
+    """Write the cleaned document to target. Images stay images; everything else becomes a PDF.
+    Adds report["number_differences"]: numbers where the new OCR text differs from the
+    original's text layer, each to be checked by a person against the page image."""
+    report["number_differences"] = []
     if ext.kind == "image":
         img = ext.image(0, "ppm")
         tmp = target + ".part"
@@ -190,8 +220,14 @@ def rebuild(ext, report, hidden_boxes, target, use_ocr=True, report_page=False):
         workers = max(1, min(4, os.cpu_count() or 2))
         visible = [sum(1 for w in ext.words[i]) - len(hidden_boxes.get(i, [])) for i in range(len(ext.pages))]
         with cf.ThreadPoolExecutor(workers) as pool:
-            pages = list(pool.map(lambda i: _build_page(ext, i, hidden_boxes.get(i, []), outdir, use_ocr,
+            built = list(pool.map(lambda i: _build_page(ext, i, hidden_boxes.get(i, []), outdir, use_ocr,
                                                          visible[i]), range(len(ext.pages))))
+        pages = [pdf for pdf, _ in built]
+        for i, (_, words) in enumerate(built):
+            if words is not None:
+                skip = {box for box, _ in hidden_boxes.get(i, [])}
+                report["number_differences"] += detect.number_differences(i + 1, ext.words[i], skip, words,
+                                                                          ext.pages[i]["dpi"])
         if report_page:
             pages.insert(0, _report_page(report, outdir))
         tmp = target + ".part"

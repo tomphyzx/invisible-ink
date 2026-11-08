@@ -20,6 +20,15 @@ def _quote(text, limit=600):
     return '"%s%s"' % (t[:limit], "..." if len(t) > limit else "")
 
 
+def _mismatch_lines(items, verbose):
+    shown = items if verbose else items[:20]
+    lines = ["  Page %d (%s): text layer says %s, page shows %s" % (
+        m["page"], m["kind"], _quote(m["text_layer"], 60), _quote(m["page_shows"], 60)) for m in shown]
+    if len(shown) < len(items):
+        lines.append("  ... and %d more (use --verbose)" % (len(items) - len(shown)))
+    return lines
+
+
 def text_report(r, verbose=False):
     out = []
     fmt = {"pdf": "PDF", "office": "Word file", "image": "image", "text": "text file"}.get(r["kind"], r["kind"])
@@ -56,6 +65,15 @@ def text_report(r, verbose=False):
             out.append("  Page %d: %s" % (p["page"], _quote(p["text"], 300)))
         if len(shown) < len(r["uncertain"]):
             out.append("  ... and %d more (use --verbose)" % (len(r["uncertain"]) - len(shown)))
+    typed = [m for m in r.get("text_mismatch", []) if not m["scan_layer"]]
+    scanned = [m for m in r.get("text_mismatch", []) if m["scan_layer"]]
+    if typed:
+        out += ["", "TEXT LAYER DOES NOT MATCH THE PAGE: an AI reading this file gets something other than a "
+                    "reader sees. Check the page image."]
+        out += _mismatch_lines(typed, verbose)
+    if scanned:
+        out += ["", "A SCAN'S OCR LAYER DISAGREES WITH ITS PICTURE (usually OCR error, sometimes not; not counted):"]
+        out += _mismatch_lines(scanned, verbose)
     if r["word"]:
         out += ["", "IN THE WORD FILE BUT NOT ON THE PAGE"]
         for f in r["word"]:
@@ -92,6 +110,9 @@ def text_report(r, verbose=False):
     if r["verdict"] == "hidden":
         out.append("RESULT: found content a reader would not see. "
                    "`invisible-ink clean` makes a copy without it.")
+    elif r["verdict"] == "mismatch":
+        out.append("RESULT: the file's text layer says something its pages do not show. "
+                   "`invisible-ink clean` makes a copy that reads what the pages show.")
     elif r["verdict"] == "active":
         out.append("RESULT: nothing hidden found, but the file has active or linked content. "
                    "`invisible-ink clean` makes a copy without it.")

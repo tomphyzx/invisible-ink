@@ -14,6 +14,14 @@ Usage: python3 tests/make_samples.py OUTDIR
   notes.txt           zero-width, tag and variation-selector smuggling, plus ordinary
                       emoji that use the same characters legitimately
   photo.jpg           photo with an Artist field and GPS in its EXIF
+  quote.pdf           a fictional vendor quote: 18-row bordered table at 9 pt, numbers tight
+                      against the borders. Must be clean.
+  swapped_digit.pdf   a page whose /ToUnicode table reads every drawn 9 as 1, so the text
+                      layer disagrees with what the page shows
+  swapped_words.pdf   a page whose /ToUnicode table swaps common letters throughout, so its
+                      text layer reads as other words entirely
+  scanned_numbers.pdf a scan of a typed page of figures with a matching OCR layer. Must
+                      be clean.
 """
 
 import os
@@ -104,6 +112,64 @@ def ordinary(path):
     d.save(path)
 
 
+def quote_rows(rows=18, seed=7):
+    """Line items as strings: (no, part, description, quantity, unit price, amount). Fictional."""
+    rnd = random.Random(seed)
+    out = []
+    for n in range(1, rows + 1):
+        part = "QP-%02d-%s%04d" % (rnd.randint(10, 99), rnd.choice("OB80"), rnd.randint(0, 9999))
+        qty, unit = rnd.randint(1, 480), round(rnd.uniform(4.5, 995.0), 2)
+        out.append((str(n), part, "Carbide insert grade %d" % rnd.randint(1, 9), str(qty),
+                    "$%s" % format(unit, ",.2f"), "$%s" % format(qty * unit, ",.2f")))
+    return out
+
+
+def _to_pdf(html_text, path):
+    """HTML to PDF through LibreOffice, whose tables set cell text close against the borders."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "page.html")
+        with open(src, "w") as f:
+            f.write(html_text)
+        subprocess.run([tool("soffice"), "--headless", "--norestore", "-env:UserInstallation=file://%s/lo" % tmp,
+                        "--infilter=HTML (StarWriter)", "--convert-to", "pdf:writer_pdf_Export", "--outdir", tmp, src],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        os.replace(os.path.join(tmp, "page.pdf"), path)
+
+
+def quote(path, rows=18, seed=7, size=9):
+    """A fictional vendor quote: a bordered table at 9 pt, numbers tight against the cell borders."""
+    cells = "".join("<tr>%s</tr>" % "".join("<td%s>%s</td>" % (" align=right" if j >= 3 else "", c)
+                                             for j, c in enumerate(row)) for row in quote_rows(rows, seed))
+    _to_pdf("""<html><head><meta charset="utf-8"></head><body><h2>Fictional Tooling Co. Quote Q-1042</h2>
+<p>Valid 30 days. Lead time 6 weeks.</p><table border=1 cellspacing=0 style="font-size:%dpt">
+<tr><th>#</th><th>Part</th><th>Description</th><th>Qty</th><th>Unit</th><th>Ext</th></tr>%s</table></body></html>
+""" % (size, cells), path)
+
+
+def swapped_digit(path):
+    """Draws $98,400.00 and the like, but a /ToUnicode table reads every drawn 9 as 1."""
+    d = Doc(text_map={"9": "1"})
+    p = d.page()
+    p.text(72, 730, 14, "Purchase summary")
+    for k, line in enumerate(["Contract value $98,400.00 for 2026", "Freight and insurance $3,950.00",
+                              "Deposit due 29 November: $9,840.00", "Plain words stay the same on this page."]):
+        p.text(72, 700 - k * 24, 12, line)
+    d.save(path)
+
+
+def swapped_words(path):
+    """The page reads as plain English, but a /ToUnicode table swaps common letters throughout."""
+    d = Doc(text_map={"e": "a", "a": "e", "o": "i", "i": "o", "t": "n", "n": "t"})
+    p = d.page()
+    p.text(72, 730, 14, "Letter of intent")
+    for k, line in enumerate(["The supplier agrees to deliver every shipment before winter.",
+                              "Payment terms remain unchanged for existing customers.",
+                              "Quality inspection happens at the receiving warehouse.",
+                              "Either party may cancel this agreement with written notice."]):
+        p.text(72, 700 - k * 24, 12, line)
+    d.save(path)
+
+
 def _scan_page(tmp):
     """Render a page of text to pixels: a stand-in for a scanner."""
     d = Doc()
@@ -134,6 +200,27 @@ def scanned(path, extra=None):
             p.text(72, 700 - k * 30, 14, line, mode=3)
         if extra:
             p.text(72, 200, 14, extra, mode=3)
+        d.save(path)
+
+
+def scanned_numbers(path):
+    """A scanned page of figures with a matching invisible OCR layer."""
+    lines = ["Invoice 20417 dated 2026-11-02", "Order total $18,400.00 net 30 days", "Freight $293.60 and handling $32.00",
+             "Part numbers 233 512 678 and 904", "Remit by 2026-12-02 to account 7741"]
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Doc()
+        p = d.page()
+        for k, line in enumerate(lines):
+            p.text(72, 700 - k * 30, 14, line)
+        src = os.path.join(tmp, "src.pdf")
+        d.save(src)
+        subprocess.run(["pdftoppm", "-r", "200", "-singlefile", src, os.path.join(tmp, "scan")], check=True)
+        img = Image.open(os.path.join(tmp, "scan.ppm")).convert("RGB")
+        d = Doc()
+        p = d.page()
+        p.image(0, 0, 612, 792, img)
+        for k, line in enumerate(lines):
+            p.text(72, 700 - k * 30, 14, line, mode=3)
         d.save(path)
 
 
@@ -238,6 +325,10 @@ def main(out):
     word(os.path.join(out, "word.docx"))
     notes(os.path.join(out, "notes.txt"))
     photo(os.path.join(out, "photo.jpg"))
+    quote(os.path.join(out, "quote.pdf"))
+    swapped_digit(os.path.join(out, "swapped_digit.pdf"))
+    swapped_words(os.path.join(out, "swapped_words.pdf"))
+    scanned_numbers(os.path.join(out, "scanned_numbers.pdf"))
     print("samples written to", out)
 
 

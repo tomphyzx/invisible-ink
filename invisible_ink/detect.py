@@ -8,6 +8,7 @@ pixels only slightly is faint. Words under 3 pt or outside the page are caught b
 and position.
 """
 
+import concurrent.futures as cf
 import difflib
 import os
 import re
@@ -15,6 +16,7 @@ import re
 from PIL import ImageStat
 
 from . import chars, ocr, patterns
+from .worker import tool
 
 TINY_PT = 3.0
 # Largest change a word makes in any colour channel, out of 255, below which it is "faint".
@@ -45,6 +47,135 @@ def _overlap(a, b):
     iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
     area = max(1, min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1])))
     return ix * iy / area
+
+
+# ----------------------------------------------------- text layer against the page itself
+
+MIN_CONF_NUMBER = 85     # how sure OCR must be of a number before it can contradict the text layer
+MIN_CONF_WORD = 85
+WORD_MIN_LETTERS = 5
+WORD_MAX_RATIO = 0.5     # similarity of text-layer word and OCR word below which they differ
+WORD_MIN_FOUND = 3       # one odd word in an unusual font is not a finding
+WORD_MIN_SHARE = 0.2
+MAX_REREADS = 40         # per page; a page wrong in more places than this is already reported
+LOOKALIKE = str.maketrans("OoQDIilLSZB", "00001111528")   # letters OCR and fonts swap with digits
+AMOUNT = re.compile(r"^[(\-+$£€]*\d[\d,.]*[%)]?$")
+
+
+def is_amount(text):
+    """A plain number or money figure, not a code with letters in it."""
+    return bool(AMOUNT.match(text))
+
+
+def digits(text):
+    return re.sub(r"\D", "", text)
+
+
+def ocr_at(box_px, ocr_words):
+    """The OCR words sitting on a text-layer word's box, left to right."""
+    x0, y0, x1, y1 = box_px
+    hits = []
+    for w in ocr_words:
+        a, b, c, d = w["box"]
+        ix, iy = min(x1, c) - max(x0, a), min(y1, d) - max(y0, b)
+        if ix > 0 and iy > 0 and ix >= 0.5 * min(x1 - x0, c - a) and iy >= 0.5 * min(y1 - y0, d - b):
+            hits.append(w)
+    return sorted(hits, key=lambda w: w["box"][0])
+
+
+def _number_differs(text, shown):
+    """Do these two readings, of equal digit count, name a different number?"""
+    a, b = digits(text), digits(shown)
+    if len(a) != len(b) or a == b:
+        return False
+    if is_amount(text):
+        return True
+    return text.translate(LOOKALIKE) != shown.translate(LOOKALIKE)      # a code: O and 0 are not news
+
+
+def _compare_layer(page_no, words, reasons, scan_layer, ocr_words, img, dpi, scratch):
+    """Text-layer words that do not match what the page shows, and the numbers OCR read the
+    same as the text layer. Two separate readings of the page must agree against the text
+    layer before anything is reported."""
+    s = dpi / 72.0
+    found, letters_seen, agreed = [], 0, set()
+    rereads = 0
+
+    def px(j):
+        return (int(words[j][1] * s), int(words[j][2] * s), int(words[j][3] * s) + 1, int(words[j][4] * s) + 1)
+
+    def report_item(j, kind, shown):
+        found.append({"page": page_no, "kind": kind, "text_layer": words[j][0], "page_shows": shown,
+                      "scan_layer": j in scan_layer})
+
+    word_hits = []
+    for j, (text, *_rest) in enumerate(words):
+        if reasons[j] is not None:
+            continue
+        got = ocr_at(px(j), ocr_words)
+        if not got:
+            continue
+        shown = "".join(w["text"] for w in got)
+        conf = min(w["conf"] for w in got)
+        if len(digits(text)) >= 2:
+            if digits(shown) == digits(text):
+                agreed.add(text)
+                continue
+            if conf < MIN_CONF_NUMBER or not _number_differs(text, shown):
+                continue
+            if rereads >= MAX_REREADS:
+                continue
+            rereads += 1
+            again = ocr.read_crop(img, px(j), scratch, digits=is_amount(text))
+            if digits(again) == digits(shown):
+                report_item(j, "number", shown)
+        elif text.isalpha() and text.isascii() and len(text) >= WORD_MIN_LETTERS and j not in scan_layer:
+            # Plain letters only: English OCR reads accented and non-Latin words as something else.
+            letters_seen += 1
+            if len(got) == 1 and conf >= MIN_CONF_WORD and shown.isalpha():
+                a, b = text.lower(), shown.lower()
+                if difflib.SequenceMatcher(None, a, b).ratio() < WORD_MAX_RATIO:
+                    word_hits.append((j, shown))
+    # Words need many on one page to count: OCR misreads an unusual font now and then, but a
+    # font whose table swaps letters is wrong everywhere.
+    if letters_seen and len(word_hits) >= max(WORD_MIN_FOUND, int(WORD_MIN_SHARE * letters_seen)):
+        confirmed = []
+        for j, shown in word_hits[:MAX_REREADS]:
+            again = ocr.read_crop(img, px(j), scratch)
+            if difflib.SequenceMatcher(None, shown.lower(), again.lower()).ratio() >= 0.8:
+                confirmed.append((j, shown))
+        if len(confirmed) >= max(WORD_MIN_FOUND, int(WORD_MIN_SHARE * letters_seen)):
+            for j, shown in confirmed:
+                report_item(j, "word", shown)
+    return found, agreed
+
+
+def _page_for_ocr(ext, i):
+    """The sharpest picture of a page, for OCR: (image, dpi)."""
+    page = ext.pages[i]
+    for key, dpi in (("hires", page.get("hires_dpi")), ("ppm", page["dpi"]), ("grey", page["dpi"])):
+        img = ext.image(i, key) if page.get(key) else None
+        if img is not None:
+            return img, dpi
+    return None, page["dpi"]
+
+
+def number_differences(page_no, words, skip_boxes, ocr_words, dpi):
+    """Every number whose OCR differs from the text layer: for a person to check against the
+    page image. Unlike the scan check this reports each difference, misreadings included."""
+    s = dpi / 72.0
+    out = []
+    for text, x0, y0, x1, y1 in words:
+        d = digits(text)
+        if not d or (x0, y0, x1, y1) in skip_boxes:
+            continue
+        got = ocr_at((int(x0 * s), int(y0 * s), int(x1 * s) + 1, int(y1 * s) + 1), ocr_words)
+        shown = " ".join(w["text"] for w in got)
+        if digits(shown) != d:
+            out.append({"page": page_no, "kind": "number" if is_amount(text) else "code", "original": text,
+                        "ocr": shown or None, "confidence": min((w["conf"] for w in got), default=None),
+                        "box_pt": [round(v, 1) for v in (x0, y0, x1, y1)]})
+    return out
 
 
 def classify_words(words, page):
@@ -137,15 +268,35 @@ def _passages(page_no, words, reasons, boxes_out):
     return out
 
 
-def analyze(ext, name, packs=None, use_ocr=True):
-    """Build the report for an Extraction. packs: pattern packs to apply to visible text."""
+def analyze(ext, name, packs=None, use_ocr=True, check_text_layer=True):
+    """Build the report for an Extraction. packs: pattern packs to apply to visible text.
+    check_text_layer: read printed PDF pages by OCR and compare them with their text layer."""
     report = {"file": name, "kind": ext.kind, "source_ext": ext.source_ext, "pages": len(ext.pages), "fragments": [],
               "truncated_pages": ext.truncated_pages, "sandboxed": ext.sandboxed, "ink_checked": ext.ink_checked,
               "hidden": [], "uncertain": [], "word": [], "invisible_chars": [], "layers_off": ext.layers_off,
               "active_content": ext.markers, "metadata": ext.metadata, "metadata_ai": [],
-              "visible_ai_pages": [], "scanned_pages": [], "notes": list(ext.notes)}
+              "visible_ai_pages": [], "scanned_pages": [], "notes": list(ext.notes), "text_mismatch": []}
     hidden_boxes = {}
     page_text_visible = {}
+    layer_ocr, agreed = {}, set()
+    compare = ext.kind == "pdf" and check_text_layer
+    if compare and not use_ocr:
+        report["notes"].append("OCR was off, so the text layer was not compared with what the pages show.")
+        compare = False
+    elif compare and not tool("tesseract"):
+        report["notes"].append("Tesseract was not found, so the text layer was not compared with what the pages show.")
+        compare = False
+    if compare:
+        def read_page(i):
+            img, dpi = _page_for_ocr(ext, i)
+            if img is None:
+                return i, None
+            cleared, rules = ocr.remove_rules(img, dpi)
+            return i, (ocr.ocr_image(cleared, dpi, os.path.join(ext.workdir, "cmp-%03d.png" % (i + 1)), table=rules > 0),
+                       dpi, cleared)
+        wanted = [i for i in range(len(ext.pages)) if ext.words[i]]
+        with cf.ThreadPoolExecutor(max(1, min(4, os.cpu_count() or 2))) as pool:
+            layer_ocr = dict(pool.map(read_page, wanted))
     for i, page in enumerate(ext.pages):
         words = ext.words[i]
         reasons, disagree = classify_words(words, page)
@@ -160,13 +311,13 @@ def analyze(ext, name, packs=None, use_ocr=True):
         # shows the same words there.
         candidates = [j for j, r in enumerate(reasons) if r in ("covered", "invisible")]
         ocr_words, ocr_dpi = None, page["dpi"]
-        if use_ocr and (candidates or ext.kind == "image"):
-            for key, dpi in (("hires", page.get("hires_dpi")), ("ppm", page["dpi"]), ("grey", page["dpi"])):
-                img = ext.image(i, key) if page.get(key) else None
-                if img is not None:
-                    ocr_dpi = dpi
-                    ocr_words = ocr.ocr_image(img, dpi, os.path.join(ext.workdir, "ocr-%03d.png" % (i + 1)))
-                    break
+        if layer_ocr.get(i):
+            ocr_words, ocr_dpi = layer_ocr[i][:2]
+        elif use_ocr and (candidates or ext.kind == "image"):
+            img, ocr_dpi = _page_for_ocr(ext, i)
+            if img is not None:
+                ocr_words = ocr.ocr_image(img, ocr_dpi, os.path.join(ext.workdir, "ocr-%03d.png" % (i + 1)))
+        seen = []
         if candidates and ocr_words is not None:
             s = ocr_dpi / 72.0
             seen, shows_text = [], []
@@ -197,6 +348,11 @@ def analyze(ext, name, packs=None, use_ocr=True):
         elif candidates and not use_ocr and any(reasons[j] == "covered" for j in candidates):
             report["notes"].append("OCR was off, so words that may belong to a scan's text layer were not "
                                    "cross-checked.")
+        if layer_ocr.get(i):
+            found, same = _compare_layer(i + 1, words, reasons, set(seen), ocr_words, layer_ocr[i][2], ocr_dpi,
+                                         os.path.join(ext.workdir, "crop-%03d.png" % (i + 1)))
+            report["text_mismatch"] += found
+            agreed |= same
         boxes = []
         report["hidden"] += _passages(i + 1, words, reasons, boxes)
         if i < len(ext.offpage) and re.search(r"\w", ext.offpage[i]):
@@ -208,6 +364,9 @@ def analyze(ext, name, packs=None, use_ocr=True):
             visible += " " + " ".join(w["text"] for w in ocr_words if w["conf"] >= 60)
         page_text_visible[i + 1] = visible
 
+    # A font table that misreads a number misreads it every time. The same number read correctly
+    # elsewhere in the file means this one was a passing OCR slip.
+    report["text_mismatch"] = [m for m in report["text_mismatch"] if m["kind"] != "number" or m["text_layer"] not in agreed]
     if len(report["scanned_pages"]) >= max(2, 0.5 * len(ext.pages)):
         # A scanned document: drawing sheets and figure pages in it carry the same kind of
         # OCR layer even where OCR of the page confirms too few words to tell on its own.
@@ -251,12 +410,16 @@ def analyze(ext, name, packs=None, use_ocr=True):
 
 
 def verdict(r):
-    """'hidden' when the file carries text a reader cannot see, 'active' when it has only
-    active or linked content, else 'clean'."""
+    """'hidden' when the file carries text a reader cannot see, 'mismatch' when its text layer
+    says something its printed pages do not, 'active' when it has only active or linked
+    content, else 'clean'. A scan's own OCR layer disagreeing with the picture is listed but
+    does not count: that is usually OCR error."""
     if r["hidden"] or r["invisible_chars"] or r["layers_off"] or r["metadata_ai"]:
         return "hidden"
     if any(f["kind"] in ("hidden", "deleted") or f["ai"] for f in r.get("word", [])):
         return "hidden"
+    if any(not m["scan_layer"] for m in r.get("text_mismatch", [])):
+        return "mismatch"
     if r["active_content"]:
         return "active"
     return "clean"
@@ -271,7 +434,7 @@ def analyze_text(text, name, packs=None):
          "truncated_pages": 0, "sandboxed": None, "ink_checked": None, "hidden": [], "uncertain": [], "word": [],
          "invisible_chars": found, "layers_off": 0, "active_content": [], "metadata": {}, "metadata_ai": [],
          "visible_ai_pages": [1] if patterns.hits(text, packs or []) else [], "scanned_pages": [], "notes": [],
-         "fragments": [],
+         "fragments": [], "text_mismatch": [],
          "hidden_ai": []}
     r["verdict"] = verdict(r)
     return r

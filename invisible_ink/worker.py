@@ -297,6 +297,17 @@ def _box(b, s, w, h):
     return (max(0, int(x0 * s)), max(0, int(y0 * s)), min(w, int(x1 * s) + 1), min(h, int(y1 * s) + 1))
 
 
+def render_hires(pdf, page, outdir, entry, w_pt, h_pt):
+    """A greyscale page for OCR, at up to 300 dpi. Words that draw nothing get a closer look
+    by OCR, and printed PDF pages are read to compare with their text layer. Very large pages
+    are drawn at less than 300 dpi, so that they stay within what the trusted side will read."""
+    hbase = os.path.join(outdir, "h%03d" % page)
+    dpi = max(int(min(TARGET_DPI, MAX_PIXELS_LONG_SIDE / (max(w_pt, h_pt) / 72.0 or 0.1))), 50)
+    run(["pdftoppm", "-gray", "-r", str(dpi), "-f", str(page), "-l", str(page), "-singlefile", pdf, hbase])
+    if os.path.exists(hbase + ".pgm"):
+        entry["hires"], entry["hires_dpi"] = "h%03d.pgm" % page, dpi
+
+
 def ink_measure(pdf, page, boxes, outdir, keep_grey, entry=None):
     """Draw the page twice, with and without its text, and measure what each word adds.
 
@@ -360,12 +371,6 @@ def ink_measure(pdf, page, boxes, outdir, keep_grey, entry=None):
             os.remove(pbase + ".pgm")
     if keep_grey:
         ga.save(os.path.join(outdir, "g%03d.pgm" % page))
-        if entry is not None and any(row[0] == 0 and row[1] > 0 for row in out):
-            # Words that draw nothing get a closer look by OCR, which needs more detail.
-            hbase = os.path.join(outdir, "h%03d" % page)
-            run(["pdftoppm", "-gray", "-r", str(TARGET_DPI), "-f", str(page), "-l", str(page), "-singlefile", pdf, hbase])
-            if os.path.exists(hbase + ".pgm"):
-                entry["hires"], entry["hires_dpi"] = "h%03d.pgm" % page, TARGET_DPI
     for f in (a, b):
         if os.path.exists(f):
             os.remove(f)
@@ -423,6 +428,9 @@ def render_pdf(pdf, outdir, manifest, mode, texts):
         boxes = words[p - 1] if p - 1 < len(words) else []
         if have_gs:
             entry["ink"] = ink_measure(pdf, p, boxes, outdir, keep_grey=(mode == "scan"), entry=entry)
+        if mode == "scan" and boxes and (manifest["kind"] == "pdf"
+                                         or any(row[0] == 0 and row[1] > 0 for row in entry["ink"] or [])):
+            render_hires(pdf, p, outdir, entry, w_pt, h_pt)
             if mode == "scan" and entry["ink"] is not None:
                 entry["grey"] = "g%03d.pgm" % p
                 entry["dpi"] = INK_DPI

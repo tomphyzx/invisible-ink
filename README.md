@@ -57,10 +57,28 @@ Words under 3 points tall, and words placed outside the page, are caught by size
 | Zero-width characters, Unicode tag characters, variation-selector "emoji smuggling", text-direction overrides | every character in the file; smuggled messages are decoded and shown |
 | File properties (author, title, EXIF, GPS) | listed; flagged if they address an AI |
 | Scripts, embedded files, launch actions, remote templates, macros | flagged as active content |
+| A text layer that says something other than the page shows (a font table reading a drawn 9 as 1) | OCR of the page compared with the text layer |
 
 Hidden text worded as instructions to an AI is marked as such. Optional packs add wording typical
 of **grading**, **hiring** and **peer review** (`--pack all`). Hidden text is always checked against
 every pack.
+
+### When the text layer and the page disagree
+
+A PDF's text layer is only a claim about what the page shows. A font's `/ToUnicode` table can make
+every drawn `9` read as `1`, so the page shows $98,400.00 and an AI reads $18,400.00. No word is
+hidden, so the check above does not apply. `scan` also reads each typed PDF page with OCR and
+compares it with the text layer, and reports the differences with exit code 1:
+
+```
+TEXT LAYER DOES NOT MATCH THE PAGE: an AI reading this file gets something other than a reader sees.
+  Page 1 (number): text layer says "$18,400.00", page shows "$98,400.00"
+```
+
+A number counts as different only when OCR is confident and a second reading of that word, enlarged
+and on its own, agrees with the first. Words count only when many on the same page disagree, so one
+oddly drawn word does not raise an alarm. JSON reports carry the findings as `text_mismatch`, and
+the verdict is `mismatch`.
 
 ### Scans are not false alarms
 
@@ -85,6 +103,11 @@ keep their full resolution (up to 600 dpi).
 - Text files become `NAME.clean.txt` with invisible characters removed. Emoji that legitimately use
   joiners, variation selectors or tag characters (such as flags) are kept.
 - `--report-page` adds a first page saying what was removed.
+- Table borders are removed from the copy OCR reads, because a border beside a number gets read as
+  part of it. The page itself keeps them.
+- `--list-numbers` lists every number where the new OCR text differs from the original's text layer,
+  to check against the page image. `--json` carries the same list as `number_differences`, along
+  with the output path as `output`, and prints nothing else to standard output.
 - With `-o`, a name without an extension (or ending in `/`) is a folder; it is created if needed.
   A file name gets the right extension added if it lacks one.
 - An existing file is never overwritten: `NAME.clean-2.pdf`, `-3` and so on are used instead.
@@ -140,6 +163,8 @@ invisible-ink clean FILE...               # write NAME.clean.pdf next to each fi
 invisible-ink clean -o OUTDIR FILE...     # write the cleaned files to a folder (created if needed)
 invisible-ink clean -o NEW.pdf FILE       # one file: choose the cleaned file's name
 invisible-ink clean --report-page FILE    # add a first page listing what was removed
+invisible-ink clean --list-numbers FILE   # also list numbers where OCR differs from the original text
+invisible-ink clean --json FILE           # the result as JSON, with number_differences
 invisible-ink check                       # show which helper programs were found
 ```
 
@@ -172,6 +197,23 @@ Nothing leaves your computer. Invisible Ink makes no network connections.
 - Spreadsheets and presentations are not supported yet.
 - Only the first 100 pages are checked.
 - OCR is English by default.
+- **OCR makes mistakes, and the text in a cleaned file is OCR.** On synthetic 18-row quotes with
+  9 pt bordered tables, 99% of prices and quantities came through exactly (before table borders
+  were removed from the OCR copy: 46%). Those are synthetic tables in one font, not real documents.
+  Single digits on their own lines came through 78% of the time, and codes that mix letters and
+  digits 72% (`O` and `0`, `l` and `1` look alike). Check any figure that matters against the page
+  image; `clean --list-numbers` shows which ones differ from the original's text layer. That list
+  can only flag a difference: if the original has no text layer, there is nothing to compare with.
+- **The text-layer check is a cross-check by OCR, not a proof.** It covers typed PDF pages. It
+  compares numbers of two or more digits, and whole words only when many on a page disagree, so a
+  single altered word can pass. Only unaccented Latin-alphabet words are compared, because English
+  OCR misreads the rest. It cannot see a difference OCR reads the same way as the text layer, and a
+  number that OCR reads correctly elsewhere in the file is not flagged.
+  It is skipped without Tesseract or with `--no-ocr`; the report says so.
+- A disagreement between a scan's own OCR layer and its picture is listed but not counted, since
+  it is usually OCR error. A scan with a deliberately altered text layer therefore exits 0 with
+  the difference listed. `scan` is slower than before on typed PDFs because every page is read by
+  OCR.
 
 ## Reporting a bypass
 
@@ -182,6 +224,7 @@ Found a way to hide text that Invisible Ink misses? Please report it privately: 
 
 ```bash
 python3 -m unittest discover -s tests
+python3 tools/measure_digit_accuracy.py     # digit accuracy of clean on synthetic quotes
 ```
 
 `tests/make_samples.py` builds a synthetic document for each hiding trick, and ordinary documents

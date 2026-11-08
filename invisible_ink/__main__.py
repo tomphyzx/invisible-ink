@@ -34,7 +34,8 @@ def _scan_one(path, mode, args, packs):
         return detect.analyze_text(_read_text(path), name, packs), None, None
     ext = sandbox.extract(path, mode, require_sandbox=args.require_sandbox)
     try:
-        r, boxes = detect.analyze(ext, name, packs, use_ocr=not args.no_ocr)
+        # clean compares its own new OCR with the text layer instead (number_differences).
+        r, boxes = detect.analyze(ext, name, packs, use_ocr=not args.no_ocr, check_text_layer=mode == "scan")
     except BaseException:
         ext.cleanup()
         raise
@@ -62,8 +63,24 @@ def cmd_scan(args, packs):
     return status
 
 
+def _number_lines(r):
+    rows = r.get("number_differences", [])
+    if not rows:
+        return []
+    out = ["  Numbers to check against the page image (original text layer, then OCR):"]
+    for kind, label in (("number", "numbers"), ("code", "codes with letters")):
+        items = [n for n in rows if n["kind"] == kind]
+        if items:
+            out.append("    %s:" % label)
+            out += ['      page %d: "%s" / %s' % (n["page"], chars.printable(n["original"]),
+                                                  '"%s"' % chars.printable(n["ocr"]) if n["ocr"] else "not read")
+                    for n in items]
+    return out
+
+
 def cmd_clean(args, packs):
     status = 0
+    results = []
     if args.output and len(args.files) > 1 and not clean.is_folder(args.output):
         print("With several files, -o must be a folder (a name without an extension, or ending in /).",
               file=sys.stderr)
@@ -89,11 +106,20 @@ def cmd_clean(args, packs):
             print("%s: could not be cleaned: %s" % (path, chars.printable(str(e))), file=sys.stderr)
             status = 2
             continue
+        r["output"] = target
+        results.append(r)
+        if args.json:
+            continue
         print("%s -> %s" % (path, target))
         for line in clean.summary_lines(r):
             print("  " + chars.printable(line))
+        if args.list_numbers:
+            for line in _number_lines(r):
+                print(line)
         if r.get("sandboxed") is False:
             print("  Warning: no sandbox was available, so the file was opened directly.")
+    if args.json:
+        print(report.json_report(results))
     return status
 
 
@@ -128,6 +154,9 @@ def main(argv=None):
     c.add_argument("-o", "--output", help="output folder (created if needed; any name without an extension, or "
                    "ending in /) or, for one file, an output file name. Existing files are never overwritten.")
     c.add_argument("--report-page", action="store_true", help="add a first page saying what was removed")
+    c.add_argument("--list-numbers", action="store_true", help="list every number where the new OCR text differs "
+                   "from the original's text layer, to check against the page image")
+    c.add_argument("--json", action="store_true", help="print the result as JSON, with number_differences")
     sub.add_parser("check", help="show which helper programs were found")
     args = ap.parse_args(argv)
     try:

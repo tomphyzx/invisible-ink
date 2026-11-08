@@ -10,6 +10,9 @@ Text outside Latin-1 is written as "?".
     p.rect(60, 600, 300, 40, rgb=(1, 1, 1))   # a filled box (draw it after text to cover it)
     p.image(60, 400, 200, 100, img)    # a PIL image
     doc.save("out.pdf")
+
+Doc(text_map={"9": "1"}) gives the font a /ToUnicode table that makes every drawn 9 read as 1
+to a text extractor, while the page goes on showing 9. Test files only.
 """
 
 import zlib
@@ -47,8 +50,9 @@ class Page:
 
 
 class Doc:
-    def __init__(self, info=None):
+    def __init__(self, info=None, text_map=None):
         self.pages, self.info, self.layers = [], info or {}, 0
+        self.text_map = text_map or {}
 
     def page(self, w=612, h=792):
         p = Page(self, w, h)
@@ -70,7 +74,15 @@ class Doc:
         def stream(dict_part, data):
             return b"<< " + dict_part.encode() + b" /Length %d >>\nstream\n" % len(data) + data + b"\nendstream"
 
-        font = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
+        tounicode = ""
+        if self.text_map:
+            pairs = "\n".join("<%02X> <%04X>" % (ord(a), ord(b)) for a, b in sorted(self.text_map.items()))
+            cmap = ("/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /Adobe-Identity-UCS def "
+                    "/CMapType 2 def 1 begincodespacerange <00> <FF> endcodespacerange %d beginbfchar\n%s\nendbfchar "
+                    "endcmap CMapName currentdict /CMap defineresource pop end end" % (len(self.text_map), pairs))
+            tounicode = "/ToUnicode %d 0 R " % add(stream("", cmap.encode()))
+        font = add(("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding %s>>"
+                    % tounicode).encode())
         ocg_ids = [add(b"<< /Type /OCG /Name (Layer %d) >>" % i) for i in range(self.layers)]
         pages_id = len(objs) + 1 + sum(2 + len(p.images) for p in self.pages)   # reserved below
         kids = []
