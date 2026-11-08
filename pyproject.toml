@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 # "invisible-ink" on PyPI belongs to an unrelated project, so the package carries the maker's name.
 name = "tomphyzx-invisible-ink"
-version = "0.1.0"
+version = "0.2.0"
 description = "Find and remove text a reader can't see but an AI will read."
 readme = "README.md"
 license = { text = "MIT" }
