@@ -268,6 +268,37 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("\U0001F3F4", text)                 # the legitimate flag emoji survives
         self.assertIn("zerowidth", text)
 
+    def test_work_root(self):
+        # A caller can keep every copy and page image of the file in a folder of its own.
+        root = os.path.join(self.tmp.name, "private-work")
+        ext = sandbox.extract(self.path("ordinary.pdf"), "clean", work_root=root)
+        try:
+            self.assertEqual(os.path.dirname(ext.workdir), root)
+            self.assertTrue(os.path.exists(ext.pages[0]["ppm"]))
+            self.assertEqual(os.stat(root).st_mode & 0o777, 0o700)
+        finally:
+            ext.cleanup()
+        self.assertEqual(os.listdir(root), [])
+
+    def test_paint_over_faint_and_tiny_only(self):
+        ext = sandbox.extract(self.path("tricks.pdf"), "clean")
+        try:
+            r, boxes = detect.analyze(ext, "tricks.pdf")
+            page = ext.pages[0]
+            img = ext.image(0, "ppm")
+            before = img.copy()
+            painted = clean.paint_over(img, boxes[0], page["dpi"])
+            self.assertEqual(painted, sum(1 for _, reason in boxes[0] if reason in clean.PAINT_OVER))
+            self.assertGreater(painted, 0)
+            s = page["dpi"] / 72.0
+            for (x0, y0, x1, y1), reason in boxes[0]:
+                if reason == "faint":
+                    crop = (int(x0 * s), int(y0 * s), int(x1 * s), int(y1 * s))
+                    self.assertNotEqual(before.crop(crop).tobytes(), img.crop(crop).tobytes())
+                    self.assertEqual(len(img.crop(crop).getcolors(1 << 16) or []), 1)
+        finally:
+            ext.cleanup()
+
     def test_report_page(self):
         out = os.path.join(self.tmp.name, "with-report.pdf")
         run_cli("clean", "--report-page", "-o", out, self.path("tricks.pdf"))

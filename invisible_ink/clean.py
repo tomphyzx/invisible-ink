@@ -18,6 +18,8 @@ from PIL import ImageDraw
 from . import __version__, chars, ocr, pdfgen
 
 PAINT_OVER = {"faint", "tiny"}
+
+
 def is_folder(out):
     """-o names a folder when it is one, ends in a slash, or has no extension."""
     return os.path.isdir(out) or out.endswith(("/", os.sep)) or not os.path.splitext(out.rstrip("/"))[1]
@@ -62,15 +64,26 @@ def _background(img, box):
     return max(counts.items(), key=lambda kv: kv[1])[0]
 
 
-def _build_page(ext, i, boxes, outdir, use_ocr, visible_words):
-    page = ext.pages[i]
-    img = ext.image(i, "ppm")
-    s = page["dpi"] / 72.0
+def paint_over(img, boxes, dpi):
+    """Paint the colour around each faint or tiny word over it, in place. boxes: (box in pt,
+    reason) as detect.analyze returns them per page; dpi: the image's resolution. Invisible
+    and covered words draw nothing, so there is nothing of theirs to paint over. Returns
+    the number of words painted over."""
+    s = dpi / 72.0
     d = ImageDraw.Draw(img)
+    n = 0
     for (x0, y0, x1, y1), reason in boxes:
         if reason in PAINT_OVER:
             box = (int(x0 * s) - 1, int(y0 * s) - 1, int(x1 * s) + 2, int(y1 * s) + 2)
             d.rectangle(box, fill=_background(img, box))
+            n += 1
+    return n
+
+
+def _build_page(ext, i, boxes, outdir, use_ocr, visible_words):
+    page = ext.pages[i]
+    img = ext.image(i, "ppm")
+    paint_over(img, boxes, page["dpi"])
     photo = page["photo_ppi"] > 0 or ext.kind == "image"
     quality = 92 if photo else 85
     jpg = os.path.join(outdir, "p%03d.jpg" % (i + 1))

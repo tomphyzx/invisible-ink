@@ -63,9 +63,15 @@ def _bwrap_cmd(workdir, filename, mode):
             "/work/in/" + filename, "/work/out", mode]
 
 
-def extract(original_path, mode, require_sandbox=False, timeout=900):
-    """Copy the original into a fresh work folder, run the worker, return an Extraction."""
-    workdir = tempfile.mkdtemp(prefix="invisible-ink-")
+def extract(original_path, mode, require_sandbox=False, timeout=900, work_root=None):
+    """Copy the original into a fresh work folder, run the worker, return an Extraction.
+
+    work_root: the folder to make the work folder in (created if needed); the system's
+    temporary folder when None. A program that opens private files can keep every copy and
+    page image of them in a folder of its own choosing."""
+    if work_root:
+        os.makedirs(work_root, mode=0o700, exist_ok=True)
+    workdir = tempfile.mkdtemp(prefix="invisible-ink-", dir=work_root or None)
     os.chmod(workdir, 0o700)
     os.makedirs(os.path.join(workdir, "in"))
     os.makedirs(os.path.join(workdir, "out"))
