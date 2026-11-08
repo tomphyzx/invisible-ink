@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-labelledby="t">
+  <title id="t">Invisible Ink</title>
+  <g fill="none" stroke="#e6edf3" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="42" y="46" width="44" height="8" rx="2" stroke-width="3"/>
+    <path d="M48 54 L48 64 C30 66 22 76 22 92 L22 108 C22 114 26 118 32 118 L96 118 C102 118 106 114 106 108 L106 92 C106 76 98 66 80 64 L80 54" stroke-width="3"/>
+    <line x1="26" y1="91" x2="102" y2="91" stroke="#58a6ff" stroke-width="2" stroke-dasharray="5 4"/>
+    <path d="M52 110 C56 84 70 48 104 6" stroke-width="2.5"/>
+    <path d="M78 44 C82 24 94 10 112 2 C110 22 100 36 78 44 Z" stroke-width="2.5"/>
+    <path d="M90 26 L100 18 M86 34 L96 28 M94 18 L104 10" stroke-width="1.5"/>
+    <path d="M52 110 L50 116 L55 112" stroke-width="2"/>
+  </g>
+</svg>

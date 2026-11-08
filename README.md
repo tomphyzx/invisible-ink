@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/icon/invisible-ink-dark.svg">
+    <img src="docs/icon/invisible-ink.svg" width="128" height="128" alt="Invisible Ink icon: a clear inkwell with a quill, and a faint line marking the level of the ink">
+  </picture>
+</p>
+
 # Invisible Ink
 
 **Find and remove text a reader can't see but an AI will read.**
