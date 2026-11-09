@@ -19,6 +19,23 @@ RULE_MAX_THICK_IN = 0.06 # anything thicker is a filled shape or a large letter,
 RULE_MIN_COUNT = 3       # fewer rules than this is a letterhead or a signature line, not a table
 
 
+class OcrFailed(RuntimeError):
+    """Tesseract could not start, stopped with an error, or ran out of time."""
+
+
+def _tesseract(cmd, timeout):
+    """Run Tesseract and return what it printed. Raises OcrFailed if it did not finish properly."""
+    try:
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=ENV, timeout=timeout)
+    except OSError as e:
+        raise OcrFailed("Tesseract could not be started (%s)" % type(e).__name__) from e
+    except subprocess.TimeoutExpired as e:
+        raise OcrFailed("Tesseract ran out of time") from e
+    if r.returncode != 0:
+        raise OcrFailed("Tesseract stopped with an error (exit code %d)" % r.returncode)
+    return r.stdout.decode("utf-8", "replace")
+
+
 def parse_tsv(text):
     words = []
     reader = csv.reader(io.StringIO(text), delimiter="\t", quoting=csv.QUOTE_NONE)
@@ -91,11 +108,10 @@ def remove_rules(img, dpi):
 
 
 def ocr_words(image_path, lang="eng", table=False):
-    """Word boxes in pixels for an image file we wrote ourselves."""
-    r = subprocess.run(["tesseract", image_path, "stdout", "-l", lang, "--psm", "3"]
-                       + list(NO_TABLE_FINDER if table else ()) + ["tsv"],
-                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=ENV, timeout=300)
-    return parse_tsv(r.stdout.decode("utf-8", "replace"))
+    """Word boxes in pixels for an image file we wrote ourselves. Raises OcrFailed: no words
+    must mean a page with no words on it, never a reading that did not happen."""
+    return parse_tsv(_tesseract(["tesseract", image_path, "stdout", "-l", lang, "--psm", "3"]
+                                + list(NO_TABLE_FINDER if table else ()) + ["tsv"], 300))
 
 
 def read_crop(img, box, scratch, digits=False, lang="eng"):
@@ -112,10 +128,9 @@ def read_crop(img, box, scratch, digits=False, lang="eng"):
     if digits:
         cmd += ["-c", "tessedit_char_whitelist=0123456789$,.%-()"]
     try:
-        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=ENV, timeout=60)
+        return " ".join(_tesseract(cmd, 60).split())
     finally:
         os.remove(scratch)
-    return " ".join(r.stdout.decode("utf-8", "replace").split())
 
 
 def ocr_image(img, dpi, scratch, max_dpi=300, lang="eng", table=False):

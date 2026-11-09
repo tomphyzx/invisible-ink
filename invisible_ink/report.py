@@ -103,11 +103,23 @@ def text_report(r, verbose=False):
             out.append("  %s: %s" % (printable(k), printable(v)))
     elif r["metadata"]:
         out += ["", "File properties: %s (use --verbose to show)" % ", ".join(r["metadata"])]
+    gaps = r.get("incomplete_pages", [])
+    if gaps:
+        out += ["", "COULD NOT BE CHECKED"]
+        shown = gaps if verbose else gaps[:20]
+        out += ["  %s: %s" % ("Page %d" % g["page"] if g["page"] else "Whole file", printable(g["reason"])) for g in shown]
+        if len(shown) < len(gaps):
+            out.append("  ... and %d more (use --verbose)" % (len(gaps) - len(shown)))
+    listed = {g["reason"] for g in gaps}
     for note in r["notes"]:
-        out += ["", "Note: " + note]
+        if note not in listed:
+            out += ["", "Note: " + note]
 
     out.append("")
-    if r["verdict"] == "hidden":
+    if r["verdict"] == "incomplete":
+        out.append("RESULT: this file could not be fully checked. Do not treat it as clear; "
+                   "what could not be checked is listed above.")
+    elif r["verdict"] == "hidden":
         out.append("RESULT: found content a reader would not see. "
                    "`invisible-ink clean` makes a copy without it.")
     elif r["verdict"] == "mismatch":

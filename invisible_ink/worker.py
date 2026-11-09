@@ -27,6 +27,7 @@ import subprocess
 import sys
 import zipfile
 import xml.etree.ElementTree as ET
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # our own read-only folder only
 import chars  # noqa: E402
@@ -40,6 +41,8 @@ MIN_PHOTO_PIXELS = 250_000     # smaller images are icons and logos
 INK_DPI = 150                  # resolution of the with-text / without-text comparison
 MAX_TEXT = 20_000_000
 MAX_FINDINGS = 300
+MAX_WORD_TO_TRIM = 200         # longer "words" in the off-page check are listed whole
+NO_GHOSTSCRIPT = "Ghostscript was not found, so text covered by an image or shape, and faint text, were not checked."
 # LibreOffice halves embedded photos by default. Keep them whole.
 PDF_EXPORT = ('pdf:writer_pdf_Export:{"ReduceImageResolution":{"type":"boolean","value":"false"},'
               '"UseLosslessCompression":{"type":"boolean","value":"true"}}')
@@ -266,20 +269,41 @@ def layers_off(pdf, raw):
     return len(re.findall(rb"\d+\s+0\s+R", m.group(1))) if m else 0
 
 
+def _beyond_edge(word, unmatched, past):
+    """The part of a word outside the page, when the normal reading has the rest of it. A word
+    across the page edge comes out whole in the wide reading and cut in the normal one.
+    unmatched: normal-reading words with no partner yet. past: characters only the wide reading has."""
+    if len(word) > MAX_WORD_TO_TRIM:
+        return word
+    for cut in range(1, len(word)):
+        for rest, kept in ((word[:cut], word[cut:]), (word[-cut:], word[:-cut])):
+            if unmatched[kept] > 0 and not Counter(rest) - past:
+                unmatched[kept] -= 1
+                past.subtract(rest)
+                return rest
+    return word
+
+
 def offpage_words(normal, wide, pages):
-    """Per page, the words that appear only when reading beyond the page edges."""
+    """Per page, the text that appears only when reading beyond the page edges.
+
+    The two readings can split a line into words differently, so characters decide whether
+    anything is out there at all: text beyond the edge always adds some. Only a letter or digit
+    counts; a border of rules and dashes running past the edge cannot carry an instruction."""
     out = []
     for n_page, w_page in zip((normal.split("\f") + [""] * pages)[:pages], (wide.split("\f") + [""] * pages)[:pages]):
-        counts = {}
-        for w in n_page.split():
-            counts[w] = counts.get(w, 0) + 1
+        past = Counter(c for c in w_page if not c.isspace()) - Counter(c for c in n_page if not c.isspace())
+        if not any(c.isalnum() for c in past):
+            out.append("")
+            continue
+        unmatched = Counter(n_page.split())
         extra = []
         for w in w_page.split():
-            if counts.get(w):
-                counts[w] -= 1
+            if unmatched[w] > 0:
+                unmatched[w] -= 1
             else:
                 extra.append(w)
-        out.append(" ".join(extra)[:5000])
+        out.append(" ".join(_beyond_edge(w, unmatched, past) for w in extra)[:5000])
     return out
 
 
@@ -420,8 +444,7 @@ def render_pdf(pdf, outdir, manifest, mode, texts):
     have_gs = tool("gs") is not None
     manifest["ink_checked"] = have_gs
     if not have_gs:
-        manifest["notes"].append("Ghostscript was not found, so text covered by an image or shape, "
-                                 "and faint text, were not checked.")
+        manifest["notes"].append(NO_GHOSTSCRIPT)
     for p in range(1, pages + 1):
         w_pt, h_pt = sizes.get(p, (612.0, 792.0))
         entry = {"width_pt": w_pt, "height_pt": h_pt, "photo_ppi": round(ppi.get(p, 0.0), 1), "ink": None}

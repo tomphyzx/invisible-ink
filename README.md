@@ -80,6 +80,15 @@ and on its own, agrees with the first. Words count only when many on the same pa
 oddly drawn word does not raise an alarm. JSON reports carry the findings as `text_mismatch`, and
 the verdict is `mismatch`.
 
+### When a check cannot finish
+
+A check that did not run must not read as a clean result. If OCR fails on a page, the ink measure
+fails, or Ghostscript or Tesseract is missing, the verdict is `incomplete` and the exit code is 1,
+even if other findings were made; they stay in the report. The report lists what could not be
+checked, and JSON reports carry it as `incomplete_pages`, each with a `page` (`null` for the whole
+file) and a `reason`. Treat such a file as needing a person. `--no-ocr` is your own choice, so it
+adds a note and does not make a file `incomplete`.
+
 ### Scans are not false alarms
 
 A scanned PDF carries an invisible OCR text layer under the page image so that it can be searched.
@@ -146,8 +155,8 @@ Run it from the checkout as `bin/invisible-ink`, or install the command with
 | Program | Needed for |
 |---|---|
 | Poppler (`pdftotext`, `pdftoppm`, `pdfunite`) | everything |
-| Ghostscript (`gs`) | text that is covered or faint. Without it, only text over a flat background is found |
-| Tesseract | `clean`, and checking scans |
+| Ghostscript (`gs`) | text that is covered or faint. Without it, only text over a flat background is found, and `scan` reports `incomplete` |
+| Tesseract | `clean`, checking scans, and comparing the text layer with the pages. Without it, `scan` reports `incomplete` |
 | LibreOffice | Word files (`.docx`, `.doc`, `.odt`, `.rtf`) |
 | MuPDF (`mutool`) | optional: counting switched-off layers in compressed PDFs |
 | bubblewrap (`bwrap`) | Linux: opening files in a sandbox |
@@ -155,7 +164,7 @@ Run it from the checkout as `bin/invisible-ink`, or install the command with
 ## Use
 
 ```bash
-invisible-ink scan FILE...                # report; exit 0 clean, 1 something found, 2 error
+invisible-ink scan FILE...                # report; exit 0 clean, 1 something found or not fully checked, 2 error
 invisible-ink scan --json FILE...         # the same as JSON, for scripts
 invisible-ink scan --verbose FILE         # also file properties and every finding
 invisible-ink scan --pack hiring FILE     # also flag hiring wording in visible text
@@ -209,7 +218,7 @@ Nothing leaves your computer. Invisible Ink makes no network connections.
   single altered word can pass. Only unaccented Latin-alphabet words are compared, because English
   OCR misreads the rest. It cannot see a difference OCR reads the same way as the text layer, and a
   number that OCR reads correctly elsewhere in the file is not flagged.
-  It is skipped without Tesseract or with `--no-ocr`; the report says so.
+  With `--no-ocr` it is skipped and the report says so; without Tesseract the verdict is `incomplete`.
 - A disagreement between a scan's own OCR layer and its picture is listed but not counted, since
   it is usually OCR error. A scan with a deliberately altered text layer therefore exits 0 with
   the difference listed. `scan` is slower than before on typed PDFs because every page is read by

@@ -1,6 +1,6 @@
 """Command line.
 
-    invisible-ink scan FILE...     report what is hidden (exit 0 clean, 1 something found, 2 error)
+    invisible-ink scan FILE...     report what is hidden (exit 0 clean, 1 something found or not fully checked, 2 error)
     invisible-ink clean FILE...    write a rebuilt copy with nothing hidden in it
     invisible-ink check            show which helper programs were found
 """
@@ -125,7 +125,7 @@ def cmd_clean(args, packs):
 
 def cmd_check(_args, _packs):
     rows = [("pdftotext / pdftoppm (poppler)", tool("pdftoppm") and tool("pdftotext"), "required"),
-            ("tesseract", tool("tesseract"), "required for clean; used by scan on scanned pages"),
+            ("tesseract", tool("tesseract"), "required for clean; scan needs it to compare the text layer with the pages"),
             ("gs (Ghostscript)", tool("gs"), "strongly recommended: finds covered and faint text"),
             ("soffice (LibreOffice)", tool("soffice"), "needed for Word files"),
             ("mutool (MuPDF)", tool("mutool"), "optional: counts switched-off PDF layers reliably"),

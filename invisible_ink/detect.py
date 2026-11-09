@@ -16,7 +16,7 @@ import re
 from PIL import ImageStat
 
 from . import chars, ocr, patterns
-from .worker import tool
+from .worker import NO_GHOSTSCRIPT, tool
 
 TINY_PT = 3.0
 # Largest change a word makes in any colour channel, out of 255, below which it is "faint".
@@ -33,6 +33,8 @@ REASONS = {
     "tiny": "too small to read (under 3 pt)",
     "off_page": "outside the page",
 }
+NO_TESSERACT = "Tesseract was not found, so the text layer was not compared with what the pages show."
+INK_FAILED = "The check for covered and faint text failed on this page; only a weaker check ran."
 SOFTWARE_FIELDS = {"Creator", "Producer", "Make", "Model"}
 WORD_KINDS = {"hidden": "Text marked hidden in Word", "deleted": "Deleted text kept by tracked changes",
               "comment": "Comment", "alt_text": "Image alt text"}
@@ -275,7 +277,15 @@ def analyze(ext, name, packs=None, use_ocr=True, check_text_layer=True):
               "truncated_pages": ext.truncated_pages, "sandboxed": ext.sandboxed, "ink_checked": ext.ink_checked,
               "hidden": [], "uncertain": [], "word": [], "invisible_chars": [], "layers_off": ext.layers_off,
               "active_content": ext.markers, "metadata": ext.metadata, "metadata_ai": [],
-              "visible_ai_pages": [], "scanned_pages": [], "notes": list(ext.notes), "text_mismatch": []}
+              "visible_ai_pages": [], "scanned_pages": [], "notes": list(ext.notes), "text_mismatch": [],
+              "incomplete_pages": []}
+
+    def incomplete(page, reason):
+        """Record a check that did not run or did not finish. page is None for the whole file."""
+        entry = {"page": page, "reason": reason}
+        if entry not in report["incomplete_pages"]:
+            report["incomplete_pages"].append(entry)
+
     hidden_boxes = {}
     page_text_visible = {}
     layer_ocr, agreed = {}, set()
@@ -284,19 +294,28 @@ def analyze(ext, name, packs=None, use_ocr=True, check_text_layer=True):
         report["notes"].append("OCR was off, so the text layer was not compared with what the pages show.")
         compare = False
     elif compare and not tool("tesseract"):
-        report["notes"].append("Tesseract was not found, so the text layer was not compared with what the pages show.")
+        report["notes"].append(NO_TESSERACT)
+        if any(ext.words):
+            incomplete(None, NO_TESSERACT)
         compare = False
     if compare:
         def read_page(i):
             img, dpi = _page_for_ocr(ext, i)
             if img is None:
-                return i, None
+                return i, "No picture of the page could be made."
             cleared, rules = ocr.remove_rules(img, dpi)
-            return i, (ocr.ocr_image(cleared, dpi, os.path.join(ext.workdir, "cmp-%03d.png" % (i + 1)), table=rules > 0),
-                       dpi, cleared)
+            try:
+                return i, (ocr.ocr_image(cleared, dpi, os.path.join(ext.workdir, "cmp-%03d.png" % (i + 1)),
+                                         table=rules > 0), dpi, cleared)
+            except ocr.OcrFailed as e:
+                return i, "%s." % e
         wanted = [i for i in range(len(ext.pages)) if ext.words[i]]
         with cf.ThreadPoolExecutor(max(1, min(4, os.cpu_count() or 2))) as pool:
-            layer_ocr = dict(pool.map(read_page, wanted))
+            for i, got in pool.map(read_page, wanted):
+                if isinstance(got, str):
+                    incomplete(i + 1, "The text layer was not compared with the page: " + got)
+                else:
+                    layer_ocr[i] = got
     for i, page in enumerate(ext.pages):
         words = ext.words[i]
         reasons, disagree = classify_words(words, page)
@@ -304,6 +323,7 @@ def analyze(ext, name, packs=None, use_ocr=True, check_text_layer=True):
             report["notes"].append("Page %d: Ghostscript could not draw %d word%s that Poppler draws (a font "
                                    "problem, not hidden text)." % (i + 1, len(disagree), "" if len(disagree) == 1 else "s"))
         if page["ink"] is None and words:
+            incomplete(*((i + 1, INK_FAILED) if ext.ink_checked else (None, NO_GHOSTSCRIPT)))
             key = "ppm" if page.get("ppm") else "grey"
             reasons = _fallback_blank(words, reasons, ext.image(i, key), page["dpi"])
         # A scan's searchable text layer, or a picture's OCR layer, sits under or over a picture,
@@ -316,7 +336,10 @@ def analyze(ext, name, packs=None, use_ocr=True, check_text_layer=True):
         elif use_ocr and (candidates or ext.kind == "image"):
             img, ocr_dpi = _page_for_ocr(ext, i)
             if img is not None:
-                ocr_words = ocr.ocr_image(img, ocr_dpi, os.path.join(ext.workdir, "ocr-%03d.png" % (i + 1)))
+                try:
+                    ocr_words = ocr.ocr_image(img, ocr_dpi, os.path.join(ext.workdir, "ocr-%03d.png" % (i + 1)))
+                except ocr.OcrFailed as e:
+                    incomplete(i + 1, "The page could not be read by OCR: %s." % e)
         seen = []
         if candidates and ocr_words is not None:
             s = ocr_dpi / 72.0
@@ -349,10 +372,13 @@ def analyze(ext, name, packs=None, use_ocr=True, check_text_layer=True):
             report["notes"].append("OCR was off, so words that may belong to a scan's text layer were not "
                                    "cross-checked.")
         if layer_ocr.get(i):
-            found, same = _compare_layer(i + 1, words, reasons, set(seen), ocr_words, layer_ocr[i][2], ocr_dpi,
-                                         os.path.join(ext.workdir, "crop-%03d.png" % (i + 1)))
-            report["text_mismatch"] += found
-            agreed |= same
+            try:
+                found, same = _compare_layer(i + 1, words, reasons, set(seen), ocr_words, layer_ocr[i][2], ocr_dpi,
+                                             os.path.join(ext.workdir, "crop-%03d.png" % (i + 1)))
+                report["text_mismatch"] += found
+                agreed |= same
+            except ocr.OcrFailed as e:
+                incomplete(i + 1, "The text layer was not fully compared with the page: %s." % e)
         boxes = []
         report["hidden"] += _passages(i + 1, words, reasons, boxes)
         if i < len(ext.offpage) and re.search(r"\w", ext.offpage[i]):
@@ -393,7 +419,7 @@ def analyze(ext, name, packs=None, use_ocr=True, check_text_layer=True):
             if not f["text"]:
                 continue
         report["word"].append(dict(f, ai=patterns.hits(f["text"])))
-    report["invisible_chars"] = chars.find(ext.text)
+    report["invisible_chars"] = chars.find(chars.without_extractor_marks(ext.text) if ext.kind == "pdf" else ext.text)
     for f in report["invisible_chars"]:
         f["ai"] = patterns.hits(f["decoded"] or "")
     # Creator and Producer name the software that made the file ("ChatGPT", "Microsoft Word"),
@@ -405,15 +431,19 @@ def analyze(ext, name, packs=None, use_ocr=True, check_text_layer=True):
     if report["scanned_pages"]:
         report["notes"].append("Scanned pages with a searchable text layer: %s. Their text layer was checked "
                                "against OCR of the page." % ", ".join(map(str, report["scanned_pages"])))
+    report["incomplete_pages"].sort(key=lambda e: e["page"] or 0)
     report["verdict"] = verdict(report)
     return report, hidden_boxes
 
 
 def verdict(r):
-    """'hidden' when the file carries text a reader cannot see, 'mismatch' when its text layer
-    says something its printed pages do not, 'active' when it has only active or linked
-    content, else 'clean'. A scan's own OCR layer disagreeing with the picture is listed but
-    does not count: that is usually OCR error."""
+    """'incomplete' when a check could not run or finish, whatever else was found: it needs a
+    person, and the findings are still in the report. Otherwise 'hidden' when the file carries
+    text a reader cannot see, 'mismatch' when its text layer says something its printed pages
+    do not, 'active' when it has only active or linked content, else 'clean'. A scan's own OCR
+    layer disagreeing with the picture is listed but does not count: that is usually OCR error."""
+    if r.get("incomplete_pages"):
+        return "incomplete"
     if r["hidden"] or r["invisible_chars"] or r["layers_off"] or r["metadata_ai"]:
         return "hidden"
     if any(f["kind"] in ("hidden", "deleted") or f["ai"] for f in r.get("word", [])):
@@ -434,7 +464,7 @@ def analyze_text(text, name, packs=None):
          "truncated_pages": 0, "sandboxed": None, "ink_checked": None, "hidden": [], "uncertain": [], "word": [],
          "invisible_chars": found, "layers_off": 0, "active_content": [], "metadata": {}, "metadata_ai": [],
          "visible_ai_pages": [1] if patterns.hits(text, packs or []) else [], "scanned_pages": [], "notes": [],
-         "fragments": [], "text_mismatch": [],
+         "fragments": [], "text_mismatch": [], "incomplete_pages": [],
          "hidden_ai": []}
     r["verdict"] = verdict(r)
     return r

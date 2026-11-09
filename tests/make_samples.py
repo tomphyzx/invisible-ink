@@ -22,6 +22,12 @@ Usage: python3 tests/make_samples.py OUTDIR
                       text layer reads as other words entirely
   scanned_numbers.pdf a scan of a typed page of figures with a matching OCR layer. Must
                       be clean.
+  rtl_few.pdf         a Latin page with a few right-to-left letters in its text layer. Poppler
+                      adds direction marks around them. Must be clean.
+  rtl_page.pdf        a mostly right-to-left text layer with Latin and digits inside. Poppler
+                      nests its marks. Must be clean.
+  bidi_override.pdf   a glyph that reads as a right-to-left override. Must be flagged.
+  bidi_stray.pdf      direction marks the file itself wraps around plain Latin. Must be flagged.
 """
 
 import os
@@ -315,6 +321,18 @@ def photo(path):
     im.save(path, "JPEG", quality=90, exif=ex.tobytes())
 
 
+HEBREW = [chr(0x5D0 + i) for i in range(26)]
+
+
+def _lines(path, text_map, lines):
+    """Pages drawn in plain Latin whose /ToUnicode table gives the text layer other characters."""
+    d = Doc(text_map=text_map)
+    p = d.page()
+    for k, line in enumerate(lines):
+        p.text(72, 720 - k * 20, 12, line)
+    d.save(path)
+
+
 def main(out):
     os.makedirs(out, exist_ok=True)
     tricks(os.path.join(out, "tricks.pdf"))
@@ -329,6 +347,13 @@ def main(out):
     swapped_digit(os.path.join(out, "swapped_digit.pdf"))
     swapped_words(os.path.join(out, "swapped_words.pdf"))
     scanned_numbers(os.path.join(out, "scanned_numbers.pdf"))
+    _lines(os.path.join(out, "rtl_few.pdf"), dict(zip("QXZ", HEBREW)),
+           ["Ordinary words with QXZ in the middle.", "Number 12 then QX 34 ZQ here."])
+    _lines(os.path.join(out, "rtl_page.pdf"), dict(zip("abcdefghijklmnopqrstuvwxyz", HEBREW)),
+           ["abcdef ghijkl mnopqr stuvwx yz abcd efgh ijkl.", "mnop qrst HELLO uvwx yzab cdef ghij klmn opqr",
+            "stuv wxyz abc 2026 def ghi jkl"])
+    _lines(os.path.join(out, "bidi_override.pdf"), {"~": "\u202e"}, ["Plain ~words after a mark."])
+    _lines(os.path.join(out, "bidi_stray.pdf"), {"~": "\u202b", "^": "\u202c"}, ["Plain ~latin^ words."])
     print("samples written to", out)
 
 

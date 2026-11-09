@@ -4,17 +4,19 @@ import contextlib
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
 import make_samples  # noqa: E402
-from invisible_ink import chars, clean, detect, ocr, patterns, sandbox  # noqa: E402
+from invisible_ink import chars, clean, detect, ocr, patterns, report, sandbox, worker  # noqa: E402
 from invisible_ink.worker import tool  # noqa: E402
 from invisible_ink.__main__ import main  # noqa: E402
 
@@ -44,6 +46,19 @@ def run_cli(*argv):
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
         code = main(list(argv))
     return code, out.getvalue()
+
+
+@contextlib.contextmanager
+def failing_tesseract():
+    """Put a tesseract that always exits 3 first on the PATH."""
+    with tempfile.TemporaryDirectory() as t:
+        fake = os.path.join(t, "tesseract")
+        with open(fake, "w") as f:
+            f.write("#!/bin/sh\nexit 3\n")
+        os.chmod(fake, os.stat(fake).st_mode | stat.S_IXUSR)
+        path = t + os.pathsep + os.environ["PATH"]
+        with mock.patch.dict(os.environ, {"PATH": path}), mock.patch.dict(ocr.ENV, {"PATH": path}):
+            yield
 
 
 def pdf_text(path):
@@ -91,6 +106,52 @@ class Unit(unittest.TestCase):
             self.assertEqual(clean.output_path(src, os.path.join(t, "x.pdf")), os.path.join(t, "x-2.pdf"))
             open(os.path.join(t, "doc.clean.pdf"), "w").close()
             self.assertEqual(clean.output_path(src), os.path.join(t, "doc.clean-2.pdf"))
+
+    def test_offpage_ignores_words_split_differently(self):
+        self.assertEqual(worker.offpage_words("the TEXbook, again", "the TEX book, again", 1), [""])
+
+    def test_offpage_ignores_a_border_with_no_letters(self):
+        self.assertEqual(worker.offpage_words("a table", "a table +---+ |", 1), [""])
+
+    def test_offpage_lists_real_text(self):
+        self.assertEqual(worker.offpage_words("Visible line", "Visible line OFFPAGE beyond edge", 1),
+                         ["OFFPAGE beyond edge"])
+
+    def test_offpage_lists_only_what_is_past_the_edge(self):
+        self.assertEqual(worker.offpage_words("notwindowsname nknownplatform", "\\notwindowsname \\unknownplatform", 1),
+                         ["\\ \\u"])
+
+    def test_offpage_is_per_page(self):
+        self.assertEqual(worker.offpage_words("one\ftwo", "one\ftwo OFFPAGE", 2), ["", "OFFPAGE"])
+
+    def test_extractor_marks_removed_from_their_two_shapes(self):
+        run = "x \u202b \u05d0\u05d1\u202cy"
+        self.assertEqual(chars.without_extractor_marks(run), "x  \u05d0\u05d1y")
+        line = "\u202b" + "\u05d0" * 9 + "\u202a HELLO\u202c" + "\u05d0" * 9 + "\u202c"
+        self.assertEqual(chars.find(chars.without_extractor_marks(line)), [])
+        ends = "\u202b\u202a.\u202c" + "\u05d0" * 9 + "\u202c"                     # a full stop at the line's end
+        self.assertEqual(chars.without_extractor_marks(ends), "." + "\u05d0" * 9)
+
+    def test_other_direction_marks_stay(self):
+        for text in ("a\u202eb", "a\u2067b\u2069", "a \u202b\u05d0 b", "\u202blatin\u202c",
+                     "\u202b\u05d0\u202e\u202c", "\u202a\u05d0\u202c",
+                     "plain words \u202b\u05d0\u202a latin\u202c\u202c"):        # LRE on a Latin page
+            self.assertTrue(chars.find(chars.without_extractor_marks(text)), ascii(text))
+
+    def test_failed_ocr_is_an_error_not_an_empty_page(self):
+        with failing_tesseract(), tempfile.TemporaryDirectory() as t:
+            with self.assertRaisesRegex(ocr.OcrFailed, "exit code 3"):
+                ocr.ocr_words(os.path.join(t, "page.png"))
+
+    def test_incomplete_outranks_other_verdicts(self):
+        r = detect.analyze_text("plain", "a.txt")
+        self.assertEqual(r["verdict"], "clean")
+        r["incomplete_pages"] = [{"page": 2, "reason": "x"}]
+        r["invisible_chars"] = [{"kind": "bidi", "count": 1, "decoded": None, "after": "", "ai": []}]
+        self.assertEqual(detect.verdict(r), "incomplete")
+        text = report.text_report(dict(r, verdict="incomplete"))
+        self.assertIn("Page 2: x", text)
+        self.assertIn("could not be fully checked", text)
 
     def test_remove_rules_clears_a_table_and_leaves_a_letterhead(self):
         from PIL import Image, ImageDraw
@@ -150,7 +211,8 @@ class EndToEnd(unittest.TestCase):
             make_samples.main(cls.dir)
         cls.r = {}
         for name in ("tricks.pdf", "ordinary.pdf", "scanned.pdf", "scanned_hidden.pdf", "report.pdf", "word.docx",
-                     "photo.jpg", "quote.pdf", "swapped_digit.pdf", "swapped_words.pdf", "scanned_numbers.pdf"):
+                     "photo.jpg", "quote.pdf", "swapped_digit.pdf", "swapped_words.pdf", "scanned_numbers.pdf",
+                     "rtl_few.pdf", "rtl_page.pdf", "bidi_override.pdf", "bidi_stray.pdf"):
             cls.r[name] = scan(os.path.join(cls.dir, name))
 
     @classmethod
@@ -243,6 +305,55 @@ class EndToEnd(unittest.TestCase):
         r = scan(self.path("swapped_digit.pdf"), INVISIBLE_INK_WITHOUT="tesseract", INVISIBLE_INK_NO_SANDBOX="1")
         self.assertEqual(r["text_mismatch"], [])
         self.assertTrue(any("not compared" in n for n in r["notes"]))
+
+    def test_right_to_left_pdfs_are_not_flagged(self):
+        for name in ("rtl_few.pdf", "rtl_page.pdf"):
+            self.assertIn("\u202b", pdf_text(self.path(name)), name)           # Poppler did add its marks
+            self.assertEqual(self.r[name]["invisible_chars"], [], name)
+            self.assertEqual(self.r[name]["verdict"], "clean", name)
+
+    def test_direction_marks_in_the_file_itself_are_flagged(self):
+        for name in ("bidi_override.pdf", "bidi_stray.pdf"):
+            self.assertTrue(self.r[name]["invisible_chars"], name)
+            self.assertEqual(self.r[name]["verdict"], "hidden", name)
+
+    # ------------------------------------------------- checks that could not run
+    def test_failed_ocr_is_incomplete_not_clean(self):
+        ext = sandbox.extract(self.path("ordinary.pdf"), "scan")
+        try:
+            with failing_tesseract():
+                r = detect.analyze(ext, "ordinary.pdf")[0]
+        finally:
+            ext.cleanup()
+        self.assertEqual(r["verdict"], "incomplete")
+        self.assertEqual([g["page"] for g in r["incomplete_pages"]], [1, 2])
+        self.assertIn("exit code 3", r["incomplete_pages"][0]["reason"])
+
+    def test_failed_ink_measure_is_incomplete_not_clean(self):
+        ext = sandbox.extract(self.path("ordinary.pdf"), "scan")
+        try:
+            ext.pages[0]["ink"] = None
+            r = detect.analyze(ext, "ordinary.pdf")[0]
+        finally:
+            ext.cleanup()
+        self.assertEqual(r["verdict"], "incomplete")
+        self.assertEqual(r["incomplete_pages"], [{"page": 1, "reason": detect.INK_FAILED}])
+
+    def test_missing_helpers_are_incomplete_and_exit_1(self):
+        for missing in ("tesseract", "gs"):
+            with mock.patch.dict(os.environ, {"INVISIBLE_INK_WITHOUT": missing, "INVISIBLE_INK_NO_SANDBOX": "1"}):
+                code, text = run_cli("scan", "--json", self.path("ordinary.pdf"))
+            r = json.loads(text)
+            self.assertEqual((code, r["verdict"]), (1, "incomplete"), missing)
+            self.assertEqual([g["page"] for g in r["incomplete_pages"]], [None], missing)
+
+    def test_no_ocr_by_choice_is_not_incomplete(self):
+        code, text = run_cli("scan", "--json", "--no-ocr", self.path("ordinary.pdf"))
+        self.assertEqual((code, json.loads(text)["verdict"]), (0, "clean"))
+
+    def test_clean_says_when_a_check_could_not_finish(self):
+        r = dict(self.r["ordinary.pdf"], incomplete_pages=[{"page": 2, "reason": "x"}])
+        self.assertTrue(any("could not finish on page 2" in line for line in clean.summary_lines(r)))
 
     def test_word_form_markers_ignored(self):
         self.assertFalse(any("of Form" in f["text"] for f in self.r["word.docx"]["word"]))

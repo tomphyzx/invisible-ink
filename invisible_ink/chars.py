@@ -5,6 +5,7 @@ smuggling and bidirectional overrides. None of them shows on screen, but an AI r
     strip(text) -> text with the suspicious characters removed
 """
 
+import re
 import unicodedata
 
 TAG = range(0xE0000, 0xE0080)            # "ASCII smuggling": each tag character mirrors one ASCII character
@@ -81,6 +82,47 @@ def _decode(text, kind, i, j):
 def _context(text, i):
     before = "".join(c if c.isprintable() else " " for c in text[max(0, i - 80):i] if _kind(c, 0) is None)
     return " ".join(before.split())[-40:]
+
+
+_NOT_MARK = "[^\u202a-\u202e\u2066-\u2069\n\f]"
+_LTR_SPAN = re.compile("\u202a(%s*)\u202c" % _NOT_MARK)
+_RTL_RUN = re.compile("\u202b((?:%s|\u202a%s*\u202c)*)\u202c" % (_NOT_MARK, _NOT_MARK))
+_RTL, _LTR = {"R", "AL"}, {"L", "EN", "AN"}
+
+
+def _has(text, classes):
+    return any(unicodedata.bidirectional(c) in classes for c in text)
+
+
+def _unwrap(match, mostly_rtl):
+    """A run's text without the marks, if the run has the shape Poppler gives; else the run as it is."""
+    inner = match.group(1)
+    spans = _LTR_SPAN.findall(inner)
+    outside = _LTR_SPAN.sub("", inner)
+    if not _has(outside, _RTL) or _has(outside, _LTR):
+        return match.group(0)
+    if spans and (not mostly_rtl or any(not s or _has(s, _RTL) for s in spans)):
+        return match.group(0)
+    return _LTR_SPAN.sub(lambda s: s.group(1), inner)
+
+
+def without_extractor_marks(text):
+    """pdftotext output, without the direction marks Poppler adds itself.
+
+    A PDF stores no such marks; Poppler writes them to keep right-to-left text in order. On a
+    mostly left-to-right page it puts RLE and PDF around each right-to-left run. On a mostly
+    right-to-left page it puts them around the line and LRE and PDF around Latin, digits and
+    lone punctuation inside it. Only those exact shapes are removed, one line at a time. Overrides, isolates,
+    lone marks and marks around plain Latin text stay, to be reported as usual."""
+    if "\u202b" not in text:
+        return text
+    pages = text.split("\f")
+    for n, page in enumerate(pages):
+        if "\u202b" in page:
+            rtl = sum(unicodedata.bidirectional(c) in _RTL for c in page)
+            mostly_rtl = rtl > sum(unicodedata.bidirectional(c) == "L" for c in page)
+            pages[n] = _RTL_RUN.sub(lambda m: _unwrap(m, mostly_rtl), page)
+    return "\f".join(pages)
 
 
 def find(text, limit=200):
