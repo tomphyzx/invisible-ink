@@ -23,6 +23,8 @@ MAX_MANIFEST = 8_000_000
 MAX_WORDS_FILE = 60_000_000
 MAX_TEXT_FILE = 20_000_000
 MAX_SIDE = 8000
+# Where the worker finds the file (read-only) and writes its output, inside the sandbox.
+SANDBOX_IN, SANDBOX_OUT = "/tmp/work/in", "/tmp/work/out"
 
 
 class SandboxError(RuntimeError):
@@ -50,8 +52,11 @@ def _bwrap_cmd(workdir, filename, mode):
             "--proc", "/proc", "--dev", "/dev",
             "--tmpfs", "/tmp",
             "--ro-bind", PACKAGE, "/app/invisible_ink",
-            "--ro-bind", os.path.join(workdir, "in"), "/work/in",
-            "--bind", os.path.join(workdir, "out"), "/work/out",
+            # The two work folders sit under /tmp, on top of the empty tmpfs just mounted there.
+            # Where a program is confined by AppArmor (Ghostscript on Ubuntu 26.04), /tmp is a
+            # place its profile lets it open files; a root of our own, such as /work, is not.
+            "--ro-bind", os.path.join(workdir, "in"), SANDBOX_IN,
+            "--bind", os.path.join(workdir, "out"), SANDBOX_OUT,
             "--unshare-all",                       # includes network
             "--die-with-parent", "--new-session",
             "--clearenv",
@@ -60,7 +65,7 @@ def _bwrap_cmd(workdir, filename, mode):
             "--setenv", "LANG", "C.UTF-8",
             "--chdir", "/tmp",
             "/usr/bin/python3", "-I", "-B", "/app/invisible_ink/worker.py",
-            "/work/in/" + filename, "/work/out", mode]
+            SANDBOX_IN + "/" + filename, SANDBOX_OUT, mode]
 
 
 def extract(original_path, mode, require_sandbox=False, timeout=900, work_root=None):
@@ -200,6 +205,9 @@ class Extraction:
             entry = {"dpi": int(p["dpi"]), "width_pt": float(p["width_pt"]), "height_pt": float(p["height_pt"]),
                      "photo_ppi": float(p.get("photo_ppi", 0.0)), "ink": _ink(p.get("ink"), len(self.words[i]))}
             entry["hires_dpi"] = int(p.get("hires_dpi", 0) or 0)
+            off = p.get("off_screen", [])
+            entry["off_screen"] = {int(k) for k in off if isinstance(k, int) and 0 <= k < len(self.words[i])} \
+                if isinstance(off, list) else set()
             for key, pattern in (("ppm", r"p\d{3}\.ppm"), ("grey", r"g\d{3}\.pgm"), ("hires", r"h\d{3}\.pgm")):
                 name = p.get(key)
                 if name is not None:

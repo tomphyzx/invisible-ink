@@ -4,6 +4,7 @@ import json
 
 from .chars import KIND_NAMES, printable
 from .detect import REASONS, WORD_KINDS
+from .worker import VIEW_OFF_NOT_NAMED
 
 PACK_LABEL = {"grading": "grading", "hiring": "hiring", "review": "peer review"}
 
@@ -120,8 +121,13 @@ def text_report(r, verbose=False):
         out.append("RESULT: this file could not be fully checked. Do not treat it as clear; "
                    "what could not be checked is listed above.")
     elif r["verdict"] == "hidden":
-        out.append("RESULT: found content a reader would not see. "
-                   "`invisible-ink clean` makes a copy without it.")
+        if VIEW_OFF_NOT_NAMED in r.get("notes", []):
+            # Without MuPDF, clean cannot leave out a layer that is only hidden on screen.
+            out.append("RESULT: found content a reader would not see. `invisible-ink clean` cannot remove the text "
+                       "on that layer until MuPDF (mutool) is installed.")
+        else:
+            out.append("RESULT: found content a reader would not see. "
+                       "`invisible-ink clean` makes a copy without it.")
     elif r["verdict"] == "mismatch":
         out.append("RESULT: the file's text layer says something its pages do not show. "
                    "`invisible-ink clean` makes a copy that reads what the pages show.")

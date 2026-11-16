@@ -42,7 +42,8 @@ not think of.
 Invisible Ink looks at the result instead. It draws every page twice, once with its text and once
 without, and compares the two at each word the file says is there. **A word that changes no
 pixels cannot be seen**, however it was hidden. A word that changes them only slightly is faint.
-Words under 3 points tall, and words placed outside the page, are caught by size and position.
+Words under 3 points tall, words squeezed sideways into a sliver, and words placed outside the page
+a viewer shows, are caught by size and position.
 
 | What it finds | How |
 |---|---|
@@ -50,9 +51,9 @@ Words under 3 points tall, and words placed outside the page, are caught by size
 | Text under a white box, shape or picture | the word draws nothing visible |
 | PDF invisible rendering mode, clipped text | the word draws nothing visible |
 | Very light text | the word changes the page only slightly |
-| Tiny text (under 3 pt) | word size |
-| Text outside the page | read the page over a wider area than it shows |
-| Switched-off PDF layers | the file's layer settings |
+| Tiny text (under 3 pt), or text squeezed sideways until it is a sliver | word size and shape |
+| Text outside the page, including text in a PDF's margin that has been cropped away | word position against the page a viewer shows, and a reading of the page over a wider area than it shows |
+| PDF layers that are switched off, or set not to show on screen | the file's layer settings; the words on a layer hidden on screen are listed |
 | Word: hidden text, kept tracked deletions, comments, image alt text | the Word file's own structure |
 | Zero-width characters, Unicode tag characters, variation-selector "emoji smuggling", text-direction overrides | every character in the file; smuggled messages are decoded and shown |
 | File properties (author, title, EXIF, GPS) | listed; flagged if they address an AI |
@@ -84,7 +85,10 @@ the verdict is `mismatch`.
 
 A check that did not run must not read as a clean result. If OCR fails on a page, the ink measure
 fails, or Ghostscript or Tesseract is missing, the verdict is `incomplete` and the exit code is 1,
-even if other findings were made; they stay in the report. The report lists what could not be
+even if other findings were made; they stay in the report. The same holds for a PDF when MuPDF is
+missing, or is installed and fails on the file (an error, a crash, a timeout, or an answer that
+cannot be read): its layers could not be checked, so the PDF is `incomplete`, and `clean` makes no
+copy of it. The report lists what could not be
 checked, and JSON reports carry it as `incomplete_pages`, each with a `page` (`null` for the whole
 file) and a `reason`. Treat such a file as needing a person. `--no-ocr` is your own choice, so it
 adds a note and does not make a file `incomplete`.
@@ -102,10 +106,13 @@ instruction.
 ## How cleaning works
 
 `clean` rebuilds every page as an image of how it looks, then adds a fresh OCR text layer to typed
-pages so the result can still be searched and read by an AI. Nothing but pixels is carried over,
-so hidden text, file properties, scripts, links, embedded files and layers cannot survive. Faint and
-tiny text, which do show as a few pixels, is painted over first so OCR cannot pick it up. Photos
-keep their full resolution (up to 600 dpi).
+pages so the result can still be searched and read by an AI. A page is rebuilt at the size a viewer
+shows it; a PDF that has been cropped comes out at its cropped size, without what the crop hides.
+A PDF with a layer that is not shown on screen is rebuilt as a screen shows it. Nothing but pixels
+is carried over, so hidden text, file properties, scripts, links, embedded files and layers cannot
+survive. Faint and tiny text, which do show as a few pixels, is painted over first so OCR cannot
+pick it up. Where squeezed text is painted over, the whole squeezed run is covered. Photos keep
+their full resolution (up to 600 dpi).
 
 - PDF and Word files become `NAME.clean.pdf`.
 - Photos become `NAME.clean.jpg` / `.png` with no EXIF data, turned upright.
@@ -124,9 +131,14 @@ keep their full resolution (up to 600 dpi).
 Visible text that reads like an instruction to an AI is reported but kept: it is part of what the
 author shows every reader.
 
+`clean` exits 2 when any file could not be cleaned; the other files are still cleaned. A PDF is
+refused, with no copy made, when MuPDF is missing or its check of the file's layers did not finish:
+what shows on screen could not be established, so a copy might carry text a reader never saw.
+
 ## Install
 
-Invisible Ink is a Python program (3.10 or newer) that drives standard document tools.
+Invisible Ink is a Python program (3.10 or newer) that drives standard document tools. It is tested
+on Ubuntu 24.04 and 26.04.
 
 **Linux (Debian, Ubuntu):**
 
@@ -158,8 +170,11 @@ Run it from the checkout as `bin/invisible-ink`, or install the command with
 | Ghostscript (`gs`) | text that is covered or faint. Without it, only text over a flat background is found, and `scan` reports `incomplete` |
 | Tesseract | `clean`, checking scans, and comparing the text layer with the pages. Without it, `scan` reports `incomplete` |
 | LibreOffice | Word files (`.docx`, `.doc`, `.odt`, `.rtf`) |
-| MuPDF (`mutool`) | optional: counting switched-off layers in compressed PDFs |
+| MuPDF (`mutool`) | **required for `clean`**, and for a complete `scan` of a PDF. It reads PDF layers: counting them, listing the words on a layer that is not shown on screen, and leaving that layer out of a cleaned copy. Without it `clean` refuses every PDF and `scan` reports a PDF as `incomplete` |
 | bubblewrap (`bwrap`) | Linux: opening files in a sandbox |
+
+`invisible-ink check` lists which of these were found. It exits 2 when Poppler, Tesseract or MuPDF
+is missing, and its last line names what is missing.
 
 ## Use
 
@@ -168,13 +183,13 @@ invisible-ink scan FILE...                # report; exit 0 clean, 1 something fo
 invisible-ink scan --json FILE...         # the same as JSON, for scripts
 invisible-ink scan --verbose FILE         # also file properties and every finding
 invisible-ink scan --pack hiring FILE     # also flag hiring wording in visible text
-invisible-ink clean FILE...               # write NAME.clean.pdf next to each file
+invisible-ink clean FILE...               # write NAME.clean.pdf next to each file; exit 2 if a file could not be cleaned
 invisible-ink clean -o OUTDIR FILE...     # write the cleaned files to a folder (created if needed)
 invisible-ink clean -o NEW.pdf FILE       # one file: choose the cleaned file's name
 invisible-ink clean --report-page FILE    # add a first page listing what was removed
 invisible-ink clean --list-numbers FILE   # also list numbers where OCR differs from the original text
 invisible-ink clean --json FILE           # the result as JSON, with number_differences
-invisible-ink check                       # show which helper programs were found
+invisible-ink check                       # show which helper programs were found; exit 2 if a required one is missing
 ```
 
 Accepted files: PDF; Word (`.docx`, `.doc`, `.odt`, `.rtf`); images (`.jpg`, `.png`, `.gif`,
@@ -184,9 +199,10 @@ Accepted files: PDF; Word (`.docx`, `.doc`, `.odt`, `.rtf`); images (`.jpg`, `.p
 
 A document can be an attack on the program that opens it. On Linux, Invisible Ink opens each file
 in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox: no network, no home folder,
-a read-only system, one folder to write to. The rest of the program reads only what the sandboxed
-step wrote: raw pixels, a size-limited JSON summary, a word list and plain text. It never opens the
-original file itself. Without bubblewrap (macOS, or Linux without it installed) the file is opened
+a read-only system, one folder to write to. Inside the sandbox the file is at `/tmp/work/in`,
+read-only, and the results are written to `/tmp/work/out`. The rest of the program reads only what
+the sandboxed step wrote: raw pixels, a size-limited JSON summary, a word list and plain text. It
+never opens the original file itself. Without bubblewrap (macOS, or Linux without it installed) the file is opened
 directly and the report says so; `--require-sandbox` refuses instead.
 
 Hidden text is shown in the report so you can see what was hidden. Control characters in it are
@@ -198,8 +214,18 @@ Nothing leaves your computer. Invisible Ink makes no network connections.
 
 - **Text in pictures is not hidden text.** Words drawn in a photo or screenshot are visible to a
   reader and are left alone, as is visible text in general.
+- **`scan` can miss some hidden text.** A few ways of setting text so that it merges with
+  visible text, or of squeezing or turning it, can still give a `clean` verdict. In every
+  such case we know of, the copy `clean` makes does not contain that text, because it is
+  rebuilt from what the page shows on screen. When it matters, pass on the cleaned copy, not
+  the original.
+- **Text outside the visible page counts as hidden**, including printer's marks and job
+  lines on print-ready PDFs. **So does text that prints but does not show on screen**, such
+  as a print-only watermark. Expect such files to be reported; the words are listed so you
+  can judge them.
 - Hidden text is found in the file's text layer as Poppler reads it. Text on switched-off layers
-  is counted but not shown, because Poppler does not read it. `clean` removes it either way.
+  is counted but not shown, because Poppler does not read it; `clean` removes it either way. Text
+  on a layer that is only hidden on screen is listed, and `clean` leaves it out.
 - PDF annotations (sticky notes) and form-field values are not read yet. `clean` removes them.
 - In Word files, only Word's own format (`.docx`) is checked for hidden runs, tracked deletions,
   comments and alt text. Other formats are checked by how their pages look.

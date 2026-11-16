@@ -2,7 +2,7 @@
 
 This script is the only code that ever opens the original document. On Linux it
 runs inside a bubblewrap sandbox with no network, no access to the home folder,
-and only two folders visible: /work/in (the file, read-only) and /work/out.
+and only two folders visible: /tmp/work/in (the file, read-only) and /tmp/work/out.
 
     python3 -I worker.py SOURCE OUTDIR MODE        MODE is "scan" or "clean"
 
@@ -11,7 +11,8 @@ It writes, into OUTDIR:
                   Word-structure findings, and per-word ink measurements
   pNNN.ppm        clean mode: each page as raw RGB pixels (binary PPM, P6), for the rebuild
   gNNN.pgm        scan mode: each page as raw greyscale pixels at 150 dpi (P5), for OCR
-  words.html      the PDF text layer with word boxes (pdftotext -bbox)
+  words.html      the PDF text layer with word boxes (pdftotext -bbox), measured from the
+                  top-left corner of the page a viewer shows (the CropBox)
   text.txt        all text the file carries, for the invisible-character check
 
 The trusted side reads only those files. It never parses the original document.
@@ -19,10 +20,12 @@ The trusted side reads only those files. It never parses the original document.
 Standard library plus Pillow. Run with python3 -I.
 """
 
+import html
 import json
 import os
 import re
 import shutil
+import unicodedata
 import subprocess
 import sys
 import zipfile
@@ -42,6 +45,24 @@ INK_DPI = 150                  # resolution of the with-text / without-text comp
 MAX_TEXT = 20_000_000
 MAX_FINDINGS = 300
 MAX_WORD_TO_TRIM = 200         # longer "words" in the off-page check are listed whole
+# A layer whose usage says it is not shown on screen: a viewer leaves its text out. MuPDF follows
+# a layer's usage as a screen viewer does, and Poppler ignores usage and draws every such layer.
+# Ghostscript depends on its version (10.02 ignores usage; 10.06 follows it where the file has
+# /AS entries), so it is asked for the screen's view and is not relied on for these words.
+VIEW_OFF_NOT_NAMED = ("A layer of this PDF is set not to show on screen. MuPDF (mutool) was not found, so the "
+                      "words on it could not be listed.")
+VIEW_OFF_KEPT = ("A layer of this PDF is set not to show on screen. MuPDF (mutool) was not found, so the text on "
+                 "it could not be left out: it is in the cleaned copy.")
+# Layers are read through MuPDF. Without it only the file's plain bytes can be searched, and a
+# layer kept inside a compressed object stream is not in them: it would not be counted at all.
+NO_MUPDF = ("MuPDF (mutool) was not found, so this PDF's layers could not be fully checked: a layer hidden on screen "
+            "that is stored in a compressed part of the file would not be seen.")
+# MuPDF was found, and a step that needs it failed: it exited with an error, was killed, did not
+# return in time, or gave something that is not an answer. Nothing found is then not a finding.
+LAYER_CHECK_FAILED = ("This PDF's layers could not be checked: MuPDF (mutool) was found, but a step that needs it did "
+                      "not finish. Text on a layer hidden on screen may not have been seen.")
+OFF_SCREEN_INK = 0.25          # share of a word's ink missing from MuPDF's picture for it to be looked at
+MAX_LAYERS = 300               # layers asked after in one call to mutool
 NO_GHOSTSCRIPT = "Ghostscript was not found, so text covered by an image or shape, and faint text, were not checked."
 # LibreOffice halves embedded photos by default. Keep them whole.
 PDF_EXPORT = ('pdf:writer_pdf_Export:{"ReduceImageResolution":{"type":"boolean","value":"false"},'
@@ -54,6 +75,8 @@ PDF_MARKERS = [b"/JavaScript", b"/JS", b"/OpenAction", b"/Launch", b"/EmbeddedFi
                b"/RichMedia", b"/SubmitForm", b"/ImportData", b"/AA", b"/URI", b"/GoToR"]
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 WORD_RE = re.compile(r'<word xMin="([-\d.]+)" yMin="([-\d.]+)" xMax="([-\d.]+)" yMax="([-\d.]+)">(.*?)</word>')
+WORD_BOX_RE = re.compile(rb'<word xMin="([-\d.]+)" yMin="([-\d.]+)" xMax="([-\d.]+)" yMax="([-\d.]+)">')
+BOX_RE = re.compile(r"Page\s+(\d+)\s+(MediaBox|CropBox):" + r"\s+(-?[\d.]+)" * 4)
 
 
 def run(cmd, timeout=240):
@@ -71,6 +94,16 @@ def tool(name):
         if os.path.exists(path):
             return path
     return None
+
+
+def mupdf(args):
+    """Run mutool and give what it printed, or None when it gave no usable answer: it could not
+    be started, did not return in time, was killed, or exited with an error."""
+    try:
+        r = run([tool("mutool")] + list(args))
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return r.stdout.decode("latin-1", "replace") if r.returncode == 0 else None
 
 
 def sniff(path):
@@ -227,17 +260,54 @@ def pdf_info(pdf):
 
 
 def page_sizes(pdf, pages):
-    r = run(["pdfinfo", "-f", "1", "-l", str(pages), pdf])
-    sizes = {}
+    """Per page: its size as a viewer shows it, and where that page starts inside the MediaBox.
+
+    A viewer shows the CropBox, turned by the page's rotation. pdfinfo's page size is the
+    CropBox's. Poppler measures word boxes from the top-left corner of the turned MediaBox
+    instead, so the second result is the (x, y) distance from that corner to the visible
+    page's own top-left corner: (0, 0) for a page with no crop."""
+    r = run(["pdfinfo", "-box", "-f", "1", "-l", str(pages), pdf])
+    sizes, rot, boxes = {}, {}, {}
     for line in r.stdout.decode("utf-8", "replace").splitlines():
         m = re.match(r"Page\s+(\d+)\s+size:\s+([\d.]+)\s+x\s+([\d.]+)", line)
         if m:
             sizes[int(m.group(1))] = (float(m.group(2)), float(m.group(3)))
         m = re.match(r"Page\s+(\d+)\s+rot:\s+(\d+)", line)
-        if m and int(m.group(2)) in (90, 270) and int(m.group(1)) in sizes:
-            w, h = sizes[int(m.group(1))]
-            sizes[int(m.group(1))] = (h, w)
-    return sizes
+        if m:
+            rot[int(m.group(1))] = int(m.group(2)) % 360
+            if int(m.group(2)) in (90, 270) and int(m.group(1)) in sizes:
+                w, h = sizes[int(m.group(1))]
+                sizes[int(m.group(1))] = (h, w)
+        m = BOX_RE.match(line)
+        if m:
+            boxes.setdefault(int(m.group(1)), {})[m.group(2)] = tuple(float(m.group(i)) for i in range(3, 7))
+    offsets = {}
+    for p, b in boxes.items():
+        if "MediaBox" in b and "CropBox" in b:
+            (mx0, my0, mx1, my1), (cx0, cy0, cx1, cy1) = b["MediaBox"], b["CropBox"]
+            left, bottom, right, top = cx0 - mx0, cy0 - my0, mx1 - cx1, my1 - cy1
+            # Turning the page a quarter turn clockwise brings its bottom edge to the left.
+            offsets[p] = {0: (left, top), 90: (bottom, left), 180: (right, bottom), 270: (top, right)}.get(
+                rot.get(p, 0), (left, top))
+    return sizes, offsets
+
+
+def shift_words(path, offsets):
+    """Rewrite the word boxes in pdftotext's -bbox output so that they are measured from the
+    visible page's corner, like every picture of the page. Words outside the visible page keep
+    their place in the list, with coordinates below zero or beyond the page size."""
+    if not any(dx or dy for dx, dy in offsets.values()) or not os.path.exists(path):
+        return
+    with open(path, "rb") as f:
+        chunks = f.read().split(b"<page ")
+    for n in range(1, len(chunks)):
+        dx, dy = offsets.get(n, (0.0, 0.0))
+        if dx or dy:
+            chunks[n] = WORD_BOX_RE.sub(lambda m: b'<word xMin="%.6f" yMin="%.6f" xMax="%.6f" yMax="%.6f">' % (
+                float(m.group(1)) - dx, float(m.group(2)) - dy, float(m.group(3)) - dx, float(m.group(4)) - dy),
+                chunks[n])
+    with open(path, "wb") as f:
+        f.write(b"<page ".join(chunks))
 
 
 def photo_ppi(pdf, pages):
@@ -257,16 +327,139 @@ def photo_ppi(pdf, pages):
     return best
 
 
+def _refs(text):
+    return set(re.findall(r"(\d+)\s+\d+\s+R", text))
+
+
+def _raw_layers_off(raw):
+    """layers_off from the file's bytes alone. Layers are told apart by object number where
+    the bytes give one, so that a layer off for two reasons is one layer."""
+    def listed(key, every=False):
+        found = [_refs(m.group(1).decode("latin-1")) for m in re.finditer(rb"/" + key + rb"\s*\[([^\]]*)\]", raw)]
+        return set().union(*(found if every else found[:1]))
+    off = listed(rb"OFF")
+    if re.search(rb"/BaseState\s*/OFF", raw):
+        off |= listed(rb"OCGs", every=True) - listed(rb"ON")      # /AS entries have /OCGs lists too
+    view_off = set()
+    for m in re.finditer(rb"/ViewState\s*/OFF", raw):
+        # The object the usage sits in is the layer, unless the usage is an object of its own;
+        # then it is counted under a name no layer has.
+        start = raw.rfind(b" obj", 0, m.start())
+        num = re.search(rb"(\d+)\s+\d+$", raw[max(0, start - 24):start]) if start >= 0 else None
+        end = raw.find(b"endobj", start) if start >= 0 else -1
+        if num and b"/OCG" in raw[start:m.start()] and (end < 0 or end > m.start()):
+            view_off.add(num.group(1).decode())
+        else:
+            view_off.add("usage at %d" % m.start())
+    return len(off | view_off), len(view_off)
+
+
+def _mupdf_layers_off(pdf):
+    """layers_off as MuPDF reads the file, which sees inside compressed object streams. None when
+    any of its answers is missing or is not the kind of thing asked for: a failed query must
+    never read as a file without layers."""
+    def show(*paths):
+        out = mupdf(["show", pdf] + list(paths))
+        if out is None:
+            raise ValueError("no answer")
+        return out.strip()
+
+    def refs(path):
+        out = show(path)                # mutool prints null for anything the file does not have
+        if out != "null" and not (out.startswith("[") and out.endswith("]")):
+            raise ValueError("not a list")
+        return re.findall(r"(\d+)\s+\d+\s+R", out)
+
+    def names(*paths):
+        found = [line.strip() for line in show(*paths).splitlines() if line.strip()]
+        if len(found) != len(paths) or not all(re.fullmatch(r"null|/\w+", f) for f in found):
+            raise ValueError("not one name for each")
+        return found
+    try:
+        off = set(refs("Root/OCProperties/D/OFF"))
+        groups = refs("Root/OCProperties/OCGs")
+        view_off = set()
+        if groups:
+            if names("Root/OCProperties/D/BaseState") == ["/OFF"]:
+                off |= set(groups) - set(refs("Root/OCProperties/D/ON"))
+            for k in range(0, len(groups), MAX_LAYERS):
+                some = groups[k:k + MAX_LAYERS]
+                states = names(*["%s/Usage/View/ViewState" % g for g in some])
+                view_off |= {g for g, state in zip(some, states) if state == "/OFF"}
+    except ValueError:
+        return None
+    return len(off | view_off), len(view_off)
+
+
 def layers_off(pdf, raw):
-    """Number of optional-content layers (OCGs) switched off when the file opens."""
-    mutool = tool("mutool")
-    if mutool:
-        r = run([mutool, "show", pdf, "Root/OCProperties/D/OFF"])
-        out = r.stdout.decode("latin-1", "replace")
-        if r.returncode == 0:
-            return len(re.findall(r"\d+\s+0\s+R", out))
-    m = re.search(rb"/OFF\s*\[([^\]]*)\]", raw)
-    return len(re.findall(rb"\d+\s+0\s+R", m.group(1))) if m else 0
+    """Optional-content layers (OCGs) a reader does not see when the file opens: (how many in
+    all, how many of them by their usage, whether the check finished). A layer is counted, once,
+    when it is switched off (listed in /D /OFF, or left out of /D /ON where /D says /BaseState
+    /OFF) or when its usage says it is not shown on screen (/View /ViewState /OFF), whether or
+    not anything applies that usage automatically. Without mutool, or when mutool fails, the raw
+    bytes are searched, which misses anything inside compressed object streams: with mutool
+    found, that count is given with the third result False."""
+    if tool("mutool"):
+        found = _mupdf_layers_off(pdf)
+        if found is not None:
+            return found + (True,)
+        return _raw_layers_off(raw) + (False,)
+    return _raw_layers_off(raw) + (True,)
+
+
+def read_word_texts(path):
+    """The words' texts, page by page, in the order read_words gives their boxes."""
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        doc = f.read()
+    return [[html.unescape(m.group(5)) for m in WORD_RE.finditer(chunk)] for chunk in doc.split("<page ")[1:]]
+
+
+def _plain(text):
+    return re.sub(r"[^\w]", "", unicodedata.normalize("NFKC", text).lower())
+
+
+def screen_text(pdf, page, outdir):
+    """What MuPDF, which follows a layer's usage as a screen viewer does, finds on the page:
+    [(character, x, y)] with the centre of each character in points from the page's corner."""
+    path = os.path.join(outdir, "screen.xml")
+    answered = mupdf(["draw", "-q", "-F", "stext", "-o", path, pdf, str(page)]) is not None
+    doc = ""
+    if os.path.exists(path):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            doc = f.read()
+        os.remove(path)
+    if not answered or "</page>" not in doc:        # no page in it: not MuPDF's reading of one
+        return None
+    chars = []
+    for m in re.finditer(r'<char quad="([^"]*)"[^>]*? c="([^"]*)"', doc):
+        q = [float(v) for v in m.group(1).split()]
+        if len(q) == 8:
+            chars.append((html.unescape(m.group(2)), sum(q[0::2]) / 4.0, sum(q[1::2]) / 4.0))
+    return chars
+
+
+def off_screen_words(pdf, page, boxes, texts, missing, outdir):
+    """Indexes of the words on a layer not shown on screen. A word is one when a good part of
+    its ink is missing from MuPDF's picture of the page (missing: those words) and MuPDF does not
+    find the word at its place either. The second test tells a hidden word from a visible word
+    it is set over, whose box loses ink too. None when MuPDF did not give its reading."""
+    if not missing:
+        return []
+    chars = screen_text(pdf, page, outdir)
+    if chars is None:
+        return None
+    out = []
+    for k in missing:
+        if k >= len(texts):
+            continue
+        x0, y0, x1, y1 = boxes[k]
+        there = _plain("".join(c for c, x, y in chars if x0 - 1 <= x <= x1 + 1 and y0 - 1 <= y <= y1 + 1))
+        want = _plain(texts[k])
+        if want and want != there and want not in there:
+            out.append(k)
+    return out
 
 
 def _beyond_edge(word, unmatched, past):
@@ -321,28 +514,52 @@ def _box(b, s, w, h):
     return (max(0, int(x0 * s)), max(0, int(y0 * s)), min(w, int(x1 * s) + 1), min(h, int(y1 * s) + 1))
 
 
+def _is_picture(path):
+    """Whether the file is a picture that can be read in full."""
+    from PIL import Image
+    try:
+        with Image.open(path) as im:
+            im.load()
+        return True
+    except Exception:                   # whatever Pillow makes of a file that is not one
+        return False
+
+
 def render_hires(pdf, page, outdir, entry, w_pt, h_pt):
     """A greyscale page for OCR, at up to 300 dpi. Words that draw nothing get a closer look
     by OCR, and printed PDF pages are read to compare with their text layer. Very large pages
     are drawn at less than 300 dpi, so that they stay within what the trusted side will read."""
     hbase = os.path.join(outdir, "h%03d" % page)
     dpi = max(int(min(TARGET_DPI, MAX_PIXELS_LONG_SIDE / (max(w_pt, h_pt) / 72.0 or 0.1))), 50)
-    run(["pdftoppm", "-gray", "-r", str(dpi), "-f", str(page), "-l", str(page), "-singlefile", pdf, hbase])
+    run(["pdftoppm", "-gray", "-cropbox", "-r", str(dpi), "-f", str(page), "-l", str(page), "-singlefile", pdf, hbase])
     if os.path.exists(hbase + ".pgm"):
         entry["hires"], entry["hires_dpi"] = "h%03d.pgm" % page, dpi
 
 
-def ink_measure(pdf, page, boxes, outdir, keep_grey, entry=None):
+def _darkness(img, box):
+    crop = img.crop(box)
+    return 255.0 * crop.width * crop.height - sum(crop.getdata())
+
+
+def ink_measure(pdf, page, boxes, outdir, keep_grey, entry=None, screen=None):
     """Draw the page twice, with and without its text, and measure what each word adds.
 
     For every word: [changed pixels, box area, largest change (0-255), contrast of the area x10,
     contrast of the area in Poppler's drawing x10 (-1 if not needed), changed pixels in the box
-    widened upwards]. A word that changes no pixels is in the text layer but cannot be seen."""
+    widened upwards]. A word that changes no pixels is in the text layer but cannot be seen.
+
+    The page is drawn as a screen shows it (-dPrinted=false): a Ghostscript that follows layer
+    usage would otherwise take the print settings, because it is writing to a file, and leave
+    out a layer that shows on screen only.
+
+    screen: a picture of the page as a screen viewer shows it (MuPDF's), for a file with a layer
+    not shown on screen. entry["missing"] then lists the words with a good part of their ink
+    missing from it. The ink is Poppler's, which draws such a layer whatever its usage says."""
     from PIL import Image, ImageChops, ImageStat
     gs = tool("gs")
     a, b = os.path.join(outdir, "ink-a.ppm"), os.path.join(outdir, "ink-b.ppm")
     base = ["-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=ppmraw", "-r%d" % INK_DPI, "-dUseCropBox",
-            "-dFirstPage=%d" % page, "-dLastPage=%d" % page]
+            "-dPrinted=false", "-dFirstPage=%d" % page, "-dLastPage=%d" % page]
     r1 = run([gs] + base + ["-sOutputFile=" + a, pdf])
     r2 = run([gs] + base + ["-dFILTERTEXT", "-sOutputFile=" + b, pdf])
     if r1.returncode or r2.returncode or not (os.path.exists(a) and os.path.exists(b)):
@@ -380,19 +597,36 @@ def ink_measure(pdf, page, boxes, outdir, keep_grey, entry=None):
         out.append([changed, area, top, int(sd * 10), -1, up])
         if changed == 0 and sd < 6:
             blank.append(k)
-    if blank:
-        # A word that draws nothing over a flat area should look the same in Poppler's drawing.
-        # If Poppler shows ink there, Ghostscript failed to draw that font: not hidden text.
+    compare = bool(screen and entry is not None and os.path.exists(screen))
+    gp = None
+    if blank or compare:
         pbase = os.path.join(outdir, "ink-p")
-        run(["pdftoppm", "-gray", "-r", str(INK_DPI), "-f", str(page), "-l", str(page), "-singlefile", pdf, pbase])
+        run(["pdftoppm", "-gray", "-cropbox", "-r", str(INK_DPI), "-f", str(page), "-l", str(page), "-singlefile",
+             pdf, pbase])
         if os.path.exists(pbase + ".pgm"):
             with Image.open(pbase + ".pgm") as ip:
                 gp = ip.convert("L")
-            for k in blank:
-                box = _box(boxes[k], s, gp.width, gp.height)
-                if box[2] > box[0] and box[3] > box[1]:
-                    out[k][4] = int(ImageStat.Stat(gp.crop(box)).stddev[0] * 10)
             os.remove(pbase + ".pgm")
+    if blank and gp is not None:
+        # A word that draws nothing over a flat area should look the same in Poppler's drawing.
+        # If Poppler shows ink there, Ghostscript failed to draw that font: not hidden text.
+        for k in blank:
+            box = _box(boxes[k], s, gp.width, gp.height)
+            if box[2] > box[0] and box[3] > box[1]:
+                out[k][4] = int(ImageStat.Stat(gp.crop(box)).stddev[0] * 10)
+    if compare and gp is not None:
+        with Image.open(screen) as im:
+            gm = im.convert("L")
+        gb = cb.convert("L")
+        entry["missing"] = []
+        for k, b_pt in enumerate(boxes):
+            # The ink in the word's box in Poppler's picture: how much of it is text (it is not
+            # in the page drawn without text), and how much of it MuPDF's picture lacks.
+            there = _darkness(gp, _box(b_pt, s, gp.width, gp.height))
+            own = there - _darkness(gb, _box(b_pt, s, gb.width, gb.height))
+            gone = there - _darkness(gm, _box(b_pt, s, gm.width, gm.height))
+            if own > 0 and gone >= OFF_SCREEN_INK * own:
+                entry["missing"].append(k)
     if keep_grey:
         ga.save(os.path.join(outdir, "g%03d.pgm" % page))
     for f in (a, b):
@@ -425,7 +659,14 @@ def render_pdf(pdf, outdir, manifest, mode, texts):
     if not found & {"JavaScript", "JS", "Launch"}:
         found -= {"OpenAction", "AA", "URI", "GoToR"}
     manifest["markers"] += sorted(found)
-    manifest["layers_off"] = layers_off(pdf, raw)
+    manifest["layers_off"], view_off, layers_checked = layers_off(pdf, raw)
+    # For a file with a layer not shown on screen, MuPDF's picture of each page says which words
+    # a reader on screen does not get, and the clean page is drawn by MuPDF, which leaves them out.
+    screen = tool("mutool") if view_off and manifest["kind"] == "pdf" else None
+    if manifest["kind"] == "pdf" and not tool("mutool"):
+        manifest["notes"].append(NO_MUPDF)      # a Word file's PDF is our own conversion: it has no layers
+    if view_off and not screen and manifest["kind"] == "pdf":
+        manifest["notes"].append(VIEW_OFF_KEPT if mode == "clean" else VIEW_OFF_NOT_NAMED)
     words_path = os.path.join(outdir, "words.html")
     run(["pdftotext", "-bbox", "-enc", "UTF-8", "-f", "1", "-l", str(pages), pdf, words_path])
     r = run(["pdftotext", "-enc", "UTF-8", "-f", "1", "-l", str(pages), pdf, "-"])
@@ -438,8 +679,13 @@ def render_pdf(pdf, outdir, manifest, mode, texts):
              "-f", "1", "-l", str(pages), pdf, "-"])
     wide = r.stdout.decode("utf-8", "replace")
     manifest["offpage"] = offpage_words(normal, wide, pages)
+    # The page is what a viewer shows: the CropBox. Poppler lists words over the whole MediaBox,
+    # which keeps text outside the visible page in the list; their boxes are moved into the
+    # visible page's frame, the one every picture below is drawn in.
+    sizes, offsets = page_sizes(pdf, pages)
+    shift_words(words_path, offsets)
     words = read_words(words_path)
-    sizes = page_sizes(pdf, pages)
+    word_texts = read_word_texts(words_path) if screen else []
     ppi = photo_ppi(pdf, pages) if mode == "clean" else {}
     have_gs = tool("gs") is not None
     manifest["ink_checked"] = have_gs
@@ -449,8 +695,30 @@ def render_pdf(pdf, outdir, manifest, mode, texts):
         w_pt, h_pt = sizes.get(p, (612.0, 792.0))
         entry = {"width_pt": w_pt, "height_pt": h_pt, "photo_ppi": round(ppi.get(p, 0.0), 1), "ink": None}
         boxes = words[p - 1] if p - 1 < len(words) else []
+        shot = None
+        if screen and have_gs and boxes:
+            shot = os.path.join(outdir, "screen.pgm")
+            if mupdf(["draw", "-q", "-r", str(INK_DPI), "-c", "gray", "-o", shot, pdf, str(p)]) is None \
+                    or not _is_picture(shot):
+                layers_checked = False          # no picture of the screen's view to compare with
+                if os.path.exists(shot):
+                    os.remove(shot)
+                shot = None
         if have_gs:
-            entry["ink"] = ink_measure(pdf, p, boxes, outdir, keep_grey=(mode == "scan"), entry=entry)
+            entry["ink"] = ink_measure(pdf, p, boxes, outdir, keep_grey=(mode == "scan"), entry=entry, screen=shot)
+        if shot:
+            # No list of words to look at, with the ink measured, means the comparison did not run.
+            missing = entry.pop("missing", None)
+            found = None
+            if missing is not None:
+                found = off_screen_words(pdf, p, boxes, word_texts[p - 1] if p - 1 < len(word_texts) else [],
+                                         missing, outdir)
+            if found is None and entry["ink"] is not None:
+                layers_checked = False
+            elif found:
+                entry["off_screen"] = found
+            if os.path.exists(shot):
+                os.remove(shot)
         if mode == "scan" and boxes and (manifest["kind"] == "pdf"
                                          or any(row[0] == 0 and row[1] > 0 for row in entry["ink"] or [])):
             render_hires(pdf, p, outdir, entry, w_pt, h_pt)
@@ -459,7 +727,8 @@ def render_pdf(pdf, outdir, manifest, mode, texts):
                 entry["dpi"] = INK_DPI
         if mode == "scan" and "grey" not in entry:
             base = os.path.join(outdir, "g%03d" % p)
-            run(["pdftoppm", "-gray", "-r", str(INK_DPI), "-f", str(p), "-l", str(p), "-singlefile", pdf, base])
+            run(["pdftoppm", "-gray", "-cropbox", "-r", str(INK_DPI), "-f", str(p), "-l", str(p), "-singlefile",
+                 pdf, base])
             if os.path.exists(base + ".pgm"):
                 entry["grey"], entry["dpi"] = "g%03d.pgm" % p, INK_DPI
         if mode == "clean":
@@ -469,13 +738,20 @@ def render_pdf(pdf, outdir, manifest, mode, texts):
                 else (TARGET_DPI, MAX_PIXELS_LONG_SIDE)
             dpi = max(int(min(want, cap / max(long_in, 0.1))), 50)
             base = os.path.join(outdir, "p%03d" % p)
-            r = run(["pdftoppm", "-r", str(dpi), "-f", str(p), "-l", str(p), "-singlefile", pdf, base])
-            if r.returncode != 0 or not os.path.exists(base + ".ppm"):
-                raise RuntimeError("Could not render page %d." % p)
+            if screen:
+                if mupdf(["draw", "-q", "-r", str(dpi), "-c", "rgb", "-o", base + ".ppm", pdf, str(p)]) is None \
+                        or not os.path.exists(base + ".ppm"):
+                    raise RuntimeError("MuPDF (mutool) could not draw page %d as a screen shows it." % p)
+            else:
+                r = run(["pdftoppm", "-cropbox", "-r", str(dpi), "-f", str(p), "-l", str(p), "-singlefile", pdf, base])
+                if r.returncode != 0 or not os.path.exists(base + ".ppm"):
+                    raise RuntimeError("Could not render page %d." % p)
             entry["ppm"], entry["dpi"] = "p%03d.ppm" % p, dpi
         if "dpi" not in entry:
             raise RuntimeError("Could not render page %d." % p)
         manifest["pages"].append(entry)
+    if not layers_checked and manifest["kind"] == "pdf":    # a Word file's PDF is our own conversion: no layers
+        manifest["notes"].append(LAYER_CHECK_FAILED)
 
 
 def render_image(src, outdir, manifest, mode):

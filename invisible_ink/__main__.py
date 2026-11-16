@@ -1,8 +1,8 @@
 """Command line.
 
     invisible-ink scan FILE...     report what is hidden (exit 0 clean, 1 something found or not fully checked, 2 error)
-    invisible-ink clean FILE...    write a rebuilt copy with nothing hidden in it
-    invisible-ink check            show which helper programs were found
+    invisible-ink clean FILE...    write a rebuilt copy with nothing hidden in it (exit 2 if a file could not be cleaned)
+    invisible-ink check            show which helper programs were found (exit 2 if a required one is missing)
 """
 
 import argparse
@@ -10,7 +10,7 @@ import os
 import platform
 import sys
 
-from . import __version__, chars, clean, detect, patterns, report, sandbox
+from . import __version__, chars, clean, detect, patterns, report, sandbox, worker
 from .worker import tool
 
 TEXT_EXT = {".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".yaml", ".yml", ".rst", ".log"}
@@ -94,6 +94,12 @@ def cmd_clean(args, packs):
             else:
                 r, boxes, ext = _scan_one(path, "clean", args, packs)
                 try:
+                    if worker.NO_MUPDF in r["notes"]:
+                        # A PDF, and no MuPDF: a layer hidden on screen could not be left out of
+                        # the copy, or even be seen for certain. So there is no copy.
+                        raise RuntimeError(clean.NEEDS_MUPDF)
+                    if worker.LAYER_CHECK_FAILED in r["notes"]:
+                        raise RuntimeError(clean.LAYERS_NOT_CHECKED)
                     suffix, allowed = ".pdf", [".pdf"]
                     if ext.kind == "image":
                         suffix = ".jpg" if os.path.splitext(path)[1].lower() in (".jpg", ".jpeg") else ".png"
@@ -124,16 +130,24 @@ def cmd_clean(args, packs):
 
 
 def cmd_check(_args, _packs):
-    rows = [("pdftotext / pdftoppm (poppler)", tool("pdftoppm") and tool("pdftotext"), "required"),
-            ("tesseract", tool("tesseract"), "required for clean; scan needs it to compare the text layer with the pages"),
-            ("gs (Ghostscript)", tool("gs"), "strongly recommended: finds covered and faint text"),
-            ("soffice (LibreOffice)", tool("soffice"), "needed for Word files"),
-            ("mutool (MuPDF)", tool("mutool"), "optional: counts switched-off PDF layers reliably"),
-            ("bwrap (bubblewrap sandbox)", "yes" if sandbox.bwrap_available() else None, "Linux: recommended")]
+    """Show which helper programs were found. Exit 2 when one a row calls required is missing."""
+    rows = [("pdftotext / pdftoppm (poppler)", tool("pdftoppm") and tool("pdftotext"), "required", True),
+            ("tesseract", tool("tesseract"), "required for clean; scan needs it to compare the text layer with the pages",
+             True),
+            ("gs (Ghostscript)", tool("gs"), "strongly recommended: finds covered and faint text", False),
+            ("soffice (LibreOffice)", tool("soffice"), "needed for Word files", False),
+            ("mutool (MuPDF)", tool("mutool"), "required for clean, and for a complete scan of a PDF: reads PDF layers; "
+             "without it clean refuses every PDF and scan reports a PDF as incomplete", True),
+            ("bwrap (bubblewrap sandbox)", "yes" if sandbox.bwrap_available() else None, "Linux: recommended", False)]
     print("invisible-ink %s, Python %s, %s" % (__version__, platform.python_version(), platform.platform()))
-    for name, found, why in rows:
+    for name, found, why, _required in rows:
         print("  %-32s %-8s %s" % (name, "found" if found else "MISSING", why))
-    return 0 if tool("pdftoppm") and tool("pdftotext") else 2
+    # Named by one word, so that each program's row is the one line with its full label.
+    short = {"pdftotext / pdftoppm (poppler)": "poppler"}
+    missing = [short.get(name, name.split()[0]) for name, found, _why, required in rows if required and not found]
+    if missing:
+        print("Required and missing: %s." % ", ".join(missing))
+    return 2 if missing else 0
 
 
 def main(argv=None):

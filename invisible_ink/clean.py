@@ -15,9 +15,19 @@ import time
 
 from PIL import ImageDraw
 
-from . import __version__, chars, detect, ocr, pdfgen
+from . import __version__, chars, detect, ocr, pdfgen, worker
 
 PAINT_OVER = {"faint", "tiny"}
+# What the clean command says instead of making a copy of a PDF when MuPDF is missing (after
+# "FILE: could not be cleaned: "). Without MuPDF a layer hidden on screen may go unseen, and its
+# text would be drawn into the copy.
+NEEDS_MUPDF = "MuPDF (mutool) is needed to clean PDFs and was not found. No copy was made."
+# The same when MuPDF is installed and failed on the file: what shows on screen is not known.
+LAYERS_NOT_CHECKED = ("MuPDF (mutool) did not finish its check of this PDF, so what shows on screen could not be "
+                      "established. No copy was made.")
+# For a caller that rebuilds a PDF with such a layer all the same (the command does not).
+LAYER_TEXT_KEPT = ("Text on a layer that is not shown on screen could NOT be removed, because MuPDF (mutool) was "
+                   "not found. It is in this copy.")
 
 
 def is_folder(out):
@@ -136,7 +146,10 @@ def _summary_lines(r):
     if r["invisible_chars"]:
         lines.append("Invisible Unicode characters: %d runs, not carried over."
                      % len(r["invisible_chars"]))
-    if r["layers_off"]:
+    if worker.VIEW_OFF_KEPT in r.get("notes", []):
+        lines.append("Layers switched off or not shown on screen: %d." % r["layers_off"])
+        lines.append(LAYER_TEXT_KEPT)
+    elif r["layers_off"]:
         lines.append("Switched-off layers: %d, not carried over." % r["layers_off"])
     if r["active_content"]:
         lines.append("Active or linked content in the original: %s. Not carried over." % ", ".join(r["active_content"]))

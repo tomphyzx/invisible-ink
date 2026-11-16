@@ -20,7 +20,7 @@ from invisible_ink import chars, clean, detect, ocr, patterns, report, sandbox, 
 from invisible_ink.worker import tool  # noqa: E402
 from invisible_ink.__main__ import main  # noqa: E402
 
-NEEDED = ["pdftotext", "pdftoppm", "pdfunite", "tesseract", "gs", "soffice"]
+NEEDED = ["pdftotext", "pdftoppm", "pdfunite", "tesseract", "gs", "soffice", "mutool"]
 MISSING = [t for t in NEEDED if not tool(t)]
 
 
